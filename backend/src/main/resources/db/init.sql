@@ -340,3 +340,90 @@ ALTER TABLE finance_commitments ADD COLUMN IF NOT EXISTS commitment_date DATE;
 UPDATE finance_commitments SET commitment_date = created_at::date WHERE commitment_date IS NULL;
 ALTER TABLE finance_commitments ALTER COLUMN commitment_date SET DEFAULT CURRENT_DATE;
 ALTER TABLE finance_commitments ALTER COLUMN commitment_date SET NOT NULL;
+
+
+-- ==============================================================================
+-- 6. MÓDULO DE FROTAS (modules/fleet)
+-- ==============================================================================
+-- Acesso pela categoria nativa com table_reference = 'fleet_trips'.
+
+-- Motoristas (CNH única; um usuário do sistema por motorista, opcional)
+CREATE TABLE IF NOT EXISTS fleet_drivers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    phone VARCHAR(50),
+    license_number VARCHAR(20) NOT NULL UNIQUE,      -- Número da CNH
+    license_category VARCHAR(5) NOT NULL,            -- A, B, C, D, E, AB, AC, AD, AE
+    license_expiry DATE NOT NULL,                    -- Validade da CNH
+    user_id UUID UNIQUE REFERENCES users(id) ON DELETE SET NULL,
+    notes TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Veículos (placa única, sem hífen e em maiúsculas; capacity = passageiros, sem o motorista)
+CREATE TABLE IF NOT EXISTS fleet_vehicles (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    plate VARCHAR(10) NOT NULL UNIQUE,
+    brand VARCHAR(100),
+    model VARCHAR(100) NOT NULL,
+    year INTEGER,
+    color VARCHAR(50),
+    capacity INTEGER NOT NULL CHECK (capacity > 0),
+    odometer_km INTEGER NOT NULL DEFAULT 0 CHECK (odometer_km >= 0),
+    notes TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Viagens: SCHEDULED -> IN_PROGRESS -> COMPLETED, ou SCHEDULED -> CANCELLED
+CREATE TABLE IF NOT EXISTS fleet_trips (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    number BIGSERIAL UNIQUE,                         -- Número sequencial da viagem
+    status VARCHAR(20) NOT NULL DEFAULT 'SCHEDULED',
+    purpose VARCHAR(255) NOT NULL,                   -- Motivo / título
+    description TEXT,
+    departure_location VARCHAR(255) NOT NULL,        -- Local de partida
+    destination VARCHAR(255) NOT NULL,
+    departure_at TIMESTAMP WITH TIME ZONE NOT NULL,  -- Ida prevista
+    return_at TIMESTAMP WITH TIME ZONE NOT NULL,     -- Volta prevista
+    driver_id UUID NOT NULL REFERENCES fleet_drivers(id) ON DELETE RESTRICT,
+    vehicle_id UUID NOT NULL REFERENCES fleet_vehicles(id) ON DELETE RESTRICT,
+    actual_departure_at TIMESTAMP WITH TIME ZONE,    -- Saída real (ao iniciar)
+    actual_return_at TIMESTAMP WITH TIME ZONE,       -- Volta real (ao concluir)
+    start_odometer_km INTEGER CHECK (start_odometer_km >= 0),
+    end_odometer_km INTEGER,
+    completion_notes TEXT,
+    cancellation_reason TEXT,
+    cancelled_at TIMESTAMP WITH TIME ZONE,
+    cancelled_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT ck_fleet_trips_period CHECK (return_at > departure_at),
+    CONSTRAINT ck_fleet_trips_odometer CHECK (end_odometer_km IS NULL OR end_odometer_km >= start_odometer_km)
+);
+CREATE INDEX IF NOT EXISTS idx_fleet_trips_driver_period ON fleet_trips(driver_id, departure_at, return_at);
+CREATE INDEX IF NOT EXISTS idx_fleet_trips_vehicle_period ON fleet_trips(vehicle_id, departure_at, return_at);
+CREATE INDEX IF NOT EXISTS idx_fleet_trips_departure ON fleet_trips(departure_at);
+
+-- Participantes: usuário do sistema (USER), atendida (CLIENT) ou pessoa externa (EXTERNAL).
+-- name guarda o nome no momento do cadastro (continua lá se o usuário ou a atendida for excluído)
+CREATE TABLE IF NOT EXISTS fleet_trip_participants (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    trip_id UUID NOT NULL REFERENCES fleet_trips(id) ON DELETE CASCADE,
+    participant_type VARCHAR(20) NOT NULL,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    client_id UUID REFERENCES clients(id) ON DELETE SET NULL,
+    name VARCHAR(255) NOT NULL,
+    phone VARCHAR(50),
+    document VARCHAR(50),
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_fleet_trip_participants_trip ON fleet_trip_participants(trip_id);
+CREATE INDEX IF NOT EXISTS idx_fleet_trip_participants_user ON fleet_trip_participants(user_id);
+CREATE INDEX IF NOT EXISTS idx_fleet_trip_participants_client ON fleet_trip_participants(client_id);

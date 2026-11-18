@@ -31,6 +31,7 @@ Foi pensada para serviços de atendimento como uma Secretaria da Mulher, onde di
   - [Linha do tempo, documentos e visão 360°](#linha-do-tempo-documentos-e-visão-360)
   - [Arquivos](#arquivos)
 - [Módulo financeiro](#módulo-financeiro)
+- [Módulo de frotas](#módulo-de-frotas)
 - [Erros](#erros)
 - [Dados de demonstração](#dados-de-demonstração)
 - [Fluxo típico de uso](#fluxo-típico-de-uso)
@@ -159,14 +160,23 @@ src/main/java/com/secmulher/
     │       ├── security/           # SecurityConfig, TokenService, CurrentUserProvider
     │       ├── seed/               # DemoDataSeeder (profile "seed")
     │       └── storage/            # FileStorage e LocalFileStorage
-    └── finance/                    # Setor financeiro: ações, subações e operações
-        ├── controllers/            # /finance/dashboard, /actions, /sub-actions, /operations
+    ├── finance/                    # Setor financeiro: ações, subações e operações
+    │   ├── controllers/            # /finance/dashboard, /actions, /sub-actions, /operations, /commitments
+    │   ├── domain/
+    │   │   ├── access/             # FinanceAccessService (permissão na categoria 'finance_actions')
+    │   │   ├── dtos/
+    │   │   └── services/           # Cadastro, operações (Métodos A/B/C), empenhos, dashboard e históricos
+    │   └── infra/
+    │       ├── entities/           # FinanceAction, FinanceSubAction, FinanceOperation, FinanceEntry, FinanceCommitment
+    │       └── repositories/
+    └── fleet/                      # Frotas: motoristas, veículos, viagens e participantes
+        ├── controllers/            # /fleet/drivers, /vehicles, /trips, /availability
         ├── domain/
-        │   ├── access/             # FinanceAccessService (permissão na categoria 'finance_actions')
+        │   ├── access/             # FleetAccessService (permissão na categoria 'fleet_trips')
         │   ├── dtos/
-        │   └── services/           # Cadastro, operações (Métodos A/B/C), dashboard e históricos
+        │   └── services/           # Cadastro, escala com checagem de conflitos, ciclo de vida da viagem
         └── infra/
-            ├── entities/           # FinanceAction, FinanceSubAction, FinanceOperation, FinanceEntry
+            ├── entities/           # Driver, Vehicle, Trip, TripParticipant
             └── repositories/
 src/main/resources/
 ├── application.properties
@@ -202,6 +212,10 @@ Não é preciso registrar nada: como `Application` fica em `com.secmulher`, o Sp
 | `finance_operations` | Operações imutáveis: `number` (sequencial), `method`, `amount`, `performed_by`, `occurred_at` |
 | `finance_entries` | Lançamentos com sinal de cada operação; `kind` = `BUDGET` (dotação), `COMMITTED`, `LIQUIDATED` ou `PAID`; `sub_action_id` nulo = valor total da ação |
 | `finance_commitments` | Empenhos: `number` (único), subação, `creditor` (favorecido), `amount`, `cancelled_amount`, `liquidated_amount`, `paid_amount` |
+| `fleet_drivers` | Motoristas: `name`, CNH (`license_number` único, `license_category`, `license_expiry`), `user_id` (vínculo opcional com um usuário) |
+| `fleet_vehicles` | Veículos: `plate` (única), `model`, `capacity` (passageiros, sem o motorista), `odometer_km` |
+| `fleet_trips` | Viagens: `number`, `status`, `purpose`, partida/destino, ida e volta previstas, motorista, veículo, execução (saída/volta real, km) e cancelamento |
+| `fleet_trip_participants` | Participantes: `participant_type` (`USER`, `CLIENT`, `EXTERNAL`), `user_id`/`client_id`, `name` no momento do cadastro, telefone, documento |
 
 > Uma categoria não pode ser excluída (**409**) enquanto tiver registros em `dynamic_entities` ou se algum de seus tipos de registro já tiver sido usado na linha do tempo. Nesse caso, desative-a com `isActive: false`.
 
@@ -773,6 +787,64 @@ Cada operação volta com `number` (sequencial), `method`, `methodLabel` (ex.: "
 - **Saldo insuficiente**, Método A entre ações diferentes, Método B dentro da mesma ação, alocação em subação de outra ação, ou ação/subação inativa: **422** com a explicação.
 - **Concorrência:** toda operação trava as ações envolvidas até terminar, então duas operações ao mesmo tempo não gastam o mesmo saldo.
 - **Histórico imutável:** operações não são editadas nem apagadas. Para corrigir, faça uma operação no sentido contrário.
+
+---
+
+## Módulo de frotas
+
+Gestão da agenda dos motoristas: cadastro de **motoristas** (com CNH) e **veículos**, e **viagens** com motorista, veículo, motivo, local de partida, destino, data e hora de ida e volta e **participantes**.
+
+### Acesso
+
+Crie uma **categoria nativa** com `tableReference: "fleet_trips"` (ex.: "Frotas") e dê permissão nela. Administradores globais têm acesso total.
+
+| Permissão | Libera |
+|---|---|
+| leitura | Agenda, viagens, disponibilidade, motoristas e veículos |
+| criação | Agendar viagens e cadastrar motoristas e veículos |
+| edição | Alterar, iniciar, concluir e cancelar viagens; alterar motoristas e veículos |
+| exclusão | Excluir motoristas e veículos que nunca tiveram viagens |
+
+**Agenda do próprio motorista:** um motorista vinculado a um usuário do sistema (`userId` no cadastro) vê as suas viagens em `GET /fleet/trips/mine`, e abre cada uma delas, sem precisar de permissão na categoria.
+
+### Ciclo da viagem
+
+```
+SCHEDULED (agendada) --start--> IN_PROGRESS (em andamento) --complete--> COMPLETED (concluída)
+        \--cancel (com motivo)--> CANCELLED (cancelada)
+```
+
+- **Agendar / editar** (`POST /fleet/trips`, `PUT /fleet/trips/{id}`): só viagens agendadas podem ser editadas; no `PUT`, `participants` substitui a lista.
+- **Iniciar** (`POST /fleet/trips/{id}/start`): registra a quilometragem de saída e a saída real (padrão: agora).
+- **Concluir** (`POST /fleet/trips/{id}/complete`): registra a quilometragem de volta (≥ a de saída), a volta real e observações. A distância (`distanceKm`) é calculada e o odômetro do veículo avança.
+- **Cancelar** (`POST /fleet/trips/{id}/cancel`): exige motivo; o horário fica livre de novo.
+
+### Regras de escala
+
+Ao agendar ou editar, o motorista e o veículo ficam travados durante a checagem (duas escalas simultâneas não passam juntas):
+
+- a volta precisa ser depois da ida (**400**);
+- motorista e veículo precisam estar ativos (**422**);
+- a CNH do motorista precisa valer até o dia da volta (**422**);
+- o motorista e o veículo não podem ter outra viagem não cancelada com horário sobreposto (**409**, dizendo qual viagem conflita). Uma viagem pode começar exatamente quando a outra termina;
+- o número de participantes não pode passar a capacidade do veículo, que conta só passageiros (**422**).
+
+`GET /fleet/availability?start=2026-12-01T08:00&end=2026-12-01T12:00` lista os motoristas e veículos livres no intervalo, para montar a escala.
+
+### Participantes
+
+```json
+"participants": [
+  { "type": "USER", "userId": "uuid" },
+  { "type": "CLIENT", "clientId": "uuid", "notes": "acompanhada da filha" },
+  { "type": "EXTERNAL", "name": "Maria da Silva", "phone": "81999990000", "document": "123.456.789-00" }
+]
+```
+
+- `USER`: servidora com login. `CLIENT`: atendida cadastrada. `EXTERNAL`: pessoa sem cadastro (nome obrigatório).
+- **Sigilo das atendidas:** quem não pode ler o nome das atendidas (coluna `nome` da categoria de clientes) vê participantes `CLIENT` com `hidden: true` e sem nome, telefone, documento ou observações, e não pode incluir atendidas em viagens.
+
+A lista completa de rotas, campos e colunas está no [`DICIONARIO.md`](DICIONARIO.md#frotas).
 
 ---
 
