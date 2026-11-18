@@ -74,6 +74,7 @@
 	</dependencies>
 
 	<build>	
+		<finalName>backend-secmulher-1.2</finalName>
 		<plugins>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
