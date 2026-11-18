@@ -4,6 +4,8 @@ API REST para cadastro e acompanhamento de pessoas atendidas e de qualquer outro
 
 Foi pensada para serviços de atendimento como uma Secretaria da Mulher, onde diferentes profissionais (recepção, assistência social, psicologia, coordenação, instrutoras de cursos) trabalham sobre os mesmos cadastros, mas cada uma só pode ver e alterar o que é necessário para a sua função.
 
+> **Dicionário:** o [`DICIONARIO.md`](DICIONARIO.md) descreve cada tabela, coluna, enum e rota da aplicação. Ele é atualizado a cada mudança (regra do projeto em [`CLAUDE.md`](../CLAUDE.md)).
+
 ---
 
 ## Sumário
@@ -28,6 +30,7 @@ Foi pensada para serviços de atendimento como uma Secretaria da Mulher, onde di
   - [Busca com filtros](#busca-com-filtros)
   - [Linha do tempo, documentos e visão 360°](#linha-do-tempo-documentos-e-visão-360)
   - [Arquivos](#arquivos)
+- [Módulo financeiro](#módulo-financeiro)
 - [Erros](#erros)
 - [Dados de demonstração](#dados-de-demonstração)
 - [Fluxo típico de uso](#fluxo-típico-de-uso)
@@ -156,10 +159,15 @@ src/main/java/com/secmulher/
     │       ├── security/           # SecurityConfig, TokenService, CurrentUserProvider
     │       ├── seed/               # DemoDataSeeder (profile "seed")
     │       └── storage/            # FileStorage e LocalFileStorage
-    └── finance/                    # Setor financeiro (esqueleto, ainda sem rotas)
-        ├── controllers/
+    └── finance/                    # Setor financeiro: ações, subações e operações
+        ├── controllers/            # /finance/dashboard, /actions, /sub-actions, /operations
         ├── domain/
+        │   ├── access/             # FinanceAccessService (permissão na categoria 'finance_actions')
+        │   ├── dtos/
+        │   └── services/           # Cadastro, operações (Métodos A/B/C), dashboard e históricos
         └── infra/
+            ├── entities/           # FinanceAction, FinanceSubAction, FinanceOperation, FinanceEntry
+            └── repositories/
 src/main/resources/
 ├── application.properties
 └── db/init.sql                     # Schema do banco (fora de static/, não é publicado via HTTP)
@@ -189,6 +197,11 @@ Não é preciso registrar nada: como `Application` fica em `com.secmulher`, o Sp
 | `activity_types` | Tipos de registro manual de cada categoria: `key` (única por categoria, imutável), `label`, `description`, `color`, `position`, `is_active` |
 | `activities_ledger` | Linha do tempo e auditoria de cada registro (polimórfica: `entity_type` + `entity_id`). Registros manuais têm `action_type = 'MANUAL'`, `activity_type_id` e `activity_type_label` (o nome do tipo **no momento do registro**) |
 | `files` | Metadados dos documentos (o arquivo físico fica em `STORAGE_PATH`, com nome UUID) |
+| `finance_actions` | Ações do financeiro: `code` (único), `name`, `total_amount` (valor atual) |
+| `finance_sub_actions` | Subações: `action_id`, `code` (único no sistema), `balance` (saldo atual) |
+| `finance_operations` | Operações imutáveis: `number` (sequencial), `method`, `amount`, `performed_by`, `occurred_at` |
+| `finance_entries` | Lançamentos com sinal de cada operação; `kind` = `BUDGET` (dotação), `COMMITTED`, `LIQUIDATED` ou `PAID`; `sub_action_id` nulo = valor total da ação |
+| `finance_commitments` | Empenhos: `number` (único), subação, `creditor` (favorecido), `amount`, `cancelled_amount`, `liquidated_amount`, `paid_amount` |
 
 > Uma categoria não pode ser excluída (**409**) enquanto tiver registros em `dynamic_entities` ou se algum de seus tipos de registro já tiver sido usado na linha do tempo. Nesse caso, desative-a com `isActive: false`.
 
@@ -648,6 +661,118 @@ O usuário só pode enviar documentos com sigilo até o seu `maxConfidentiality`
 - **Download:** sempre vem com `Content-Disposition: attachment`, para o navegador não renderizar conteúdo enviado por terceiros. Downloads de documentos `RESTRICTED` ou `CONFIDENTIAL` são registrados na linha do tempo (`FILE_DOWNLOADED`).
 - **Mudança de sigilo:** exige que o usuário tenha acesso tanto ao nível antigo quanto ao novo.
 - **Armazenamento:** o arquivo físico é gravado com nome UUID; o nome original é só metadado.
+
+---
+
+## Módulo financeiro
+
+Controla o orçamento por **ações** e **subações**. Cada ação tem um valor total, repartido entre as suas subações:
+
+```
+valor total da ação = soma dos saldos das subações (distribuído) + saldo a distribuir
+```
+
+Na subação, o saldo (`balance`) é a **dotação**. Os gastos seguem o ciclo **empenho → liquidação → pagamento**, e o empenho consome a dotação:
+
+```
+disponível da subação = dotação - empenhado
+pago <= liquidado <= empenhado <= dotação
+```
+
+Os valores só mudam por **operações**, e toda operação fica no histórico. Cada operação grava lançamentos com sinal (`finance_entries`): sem subação, o lançamento mexe no valor total da ação; com subação, mexe na dotação ou no empenhado, liquidado ou pago dela, conforme o tipo (`kind`). O valor em qualquer dia passado é a soma dos lançamentos até o fim daquele dia.
+
+### Data real das operações
+
+Toda operação aceita `date` (`AAAA-MM-DD`): a **data real** em que aconteceu, por exemplo a data do empenho ou do pagamento. Sem `date`, vale o dia do registro; data futura é recusada (**400**). No valor inicial da ação, o campo é `initialDate`.
+
+- A data real (`operationDate`) define os saldos em cada dia (`?date=`) e a ordem dos históricos. O momento em que a operação foi digitada continua guardado (`registeredAt`).
+- **Lançamento retroativo é conferido dia a dia.** A aplicação refaz a linha do tempo com a operação nova e recusa (**422**, dizendo o dia do problema) se, em qualquer dia a partir da data informada:
+  - o empenhado da subação passar a dotação dela (disponível negativo);
+  - o distribuído nas subações passar o valor total da ação (saldo a distribuir negativo);
+  - o liquidado de um empenho passar o empenhado, ou o pago passar o liquidado.
+- Liquidação, pagamento e anulação não podem ter data anterior à data do empenho.
+- Para lançar empenhos antigos, registre antes a dotação com a data certa (valor inicial com `initialDate`, distribuição ou TAC com `date`).
+
+| Operação | Rota | O que faz |
+|---|---|---|
+| Valor inicial | `POST /finance/actions` com `initialAmount` | Cria a ação já com valor; ele entra todo como saldo a distribuir |
+| Distribuição | `POST /finance/operations/distributions` | Reparte o saldo a distribuir da ação entre as subações dela |
+| **Método A** | `POST /finance/operations/sub-action-transfers` | Move saldo **disponível** entre subações **da mesma ação**. O total da ação não muda |
+| **Método B** | `POST /finance/operations/action-transfers` | Move saldo **disponível** de uma subação para a subação de **outra ação**. O total da origem diminui e o do destino aumenta |
+| **Método C (TAC)** | `POST /finance/operations/tac` | Soma valor à ação. O que não for alocado nas subações fica como saldo a distribuir |
+| Empenho | `POST /finance/commitments` | Reserva parte do disponível da subação para um favorecido |
+| Liquidação | `POST /finance/commitments/{id}/liquidations` | Reconhece a despesa, até o valor a liquidar do empenho |
+| Pagamento | `POST /finance/commitments/{id}/payments` | Paga, até o valor já liquidado e ainda não pago |
+| Anulação de empenho | `POST /finance/commitments/{id}/cancellations` | Anula parte ou todo o valor **ainda não liquidado**; ele volta a ficar disponível na subação |
+
+### Acesso
+
+Usa a matriz de permissões: crie uma **categoria nativa** com `tableReference: "finance_actions"` (ex.: "Financeiro") e dê permissão aos usuários nela. Administradores globais têm acesso total, mesmo sem a categoria.
+
+| Permissão | Libera |
+|---|---|
+| leitura | Dashboard, saldos em uma data, históricos e operações |
+| criação | Cadastrar ações (inclusive com valor inicial) e subações |
+| edição | Alterar ações e subações e **realizar operações**, inclusive empenhar, liquidar, pagar e anular |
+| exclusão | Excluir ações e subações que nunca foram movimentadas |
+
+### Rotas
+
+| Método | Rota | Acesso | Descrição |
+|---|---|---|---|
+| `GET` | `/finance/dashboard?date=` | leitura | Todas as ações, com subações e totais gerais. Com `date` (`AAAA-MM-DD`), mostra como tudo estava no fim daquele dia |
+| `GET` | `/finance/actions?date=` | leitura | Mesma lista do dashboard, sem os totais gerais |
+| `GET` | `/finance/actions/{id}?date=` | leitura | Uma ação com as suas subações (atual ou em uma data) |
+| `POST` | `/finance/actions` | criação | Cria a ação: `{ "code", "name", "description", "initialAmount", "initialDate" }` |
+| `PUT` | `/finance/actions/{id}` | edição | Altera `code`, `name`, `description`, `isActive`. O valor não é editável |
+| `DELETE` | `/finance/actions/{id}` | exclusão | **409** se a ação já teve operações (desative com `isActive: false`) |
+| `GET` | `/finance/actions/{id}/history?from=&to=` | leitura | Operações da ação, mais recente primeiro, com quanto cada uma mudou o total e o saldo a distribuir, e como eles ficaram |
+| `POST` | `/finance/actions/{id}/sub-actions` | criação | Cria a subação (saldo zero): `{ "code", "name", "description" }` |
+| `GET` | `/finance/sub-actions/{id}?date=` | leitura | Uma subação (atual ou em uma data) |
+| `PUT` | `/finance/sub-actions/{id}` | edição | Altera `code`, `name`, `description`, `isActive` |
+| `DELETE` | `/finance/sub-actions/{id}` | exclusão | **409** se a subação já teve operações |
+| `GET` | `/finance/sub-actions/{id}/history?from=&to=` | leitura | Operações da subação, com a variação (`delta`) e o saldo depois de cada uma (`balanceAfter`) |
+| `GET` | `/finance/operations?actionId=&subActionId=&commitmentId=&method=&from=&to=` | leitura | Histórico geral, filtros opcionais |
+| `GET` | `/finance/operations/{id}` | leitura | Uma operação com os seus lançamentos |
+| `POST` | `/finance/operations/...` | edição | Operações da tabela acima; respondem **201** com a operação criada |
+| `GET` | `/finance/commitments?actionId=&subActionId=&creditor=&status=` | leitura | Empenhos, mais recentes primeiro. `creditor` busca por parte do nome; `status` = `TO_LIQUIDATE`, `TO_PAY`, `PAID` ou `CANCELLED` |
+| `GET` | `/finance/commitments/{id}` | leitura | Empenho com todas as suas operações (empenho, liquidações, pagamentos, anulações) |
+| `POST` | `/finance/commitments` | edição | Empenha: `{ "subActionId", "number", "creditor", "description", "amount", "date" }` (**201**) |
+| `PUT` | `/finance/commitments/{id}` | edição | Altera `number`, `creditor`, `description`. O valor só muda por anulação |
+| `POST` | `/finance/commitments/{id}/liquidations` | edição | `{ "amount", "description", "date" }` |
+| `POST` | `/finance/commitments/{id}/payments` | edição | `{ "amount", "description", "date" }` |
+| `POST` | `/finance/commitments/{id}/cancellations` | edição | `{ "amount", "description", "date" }` |
+
+**Totais de execução:** toda subação, ação e o dashboard (atual ou em uma data) trazem `committedAmount` (empenhado), `liquidatedAmount` (liquidado), `paidAmount` (pago) e `availableAmount` (disponível). Na subação, disponível = dotação − empenhado; na ação, disponível = valor total − empenhado (inclui o saldo a distribuir). Os históricos de ação e subação também mostram quanto cada operação mudou o empenhado, liquidado e pago, e como eles ficaram depois.
+
+Cada empenho mostra o valor original (`amount`), o anulado, o empenhado líquido (`committedAmount`), o liquidado, o pago, o que falta liquidar (`toLiquidateAmount`) e pagar (`toPayAmount`), e a situação (`status`).
+
+Exemplos:
+
+```json
+// Método A ou B
+{ "fromSubActionId": "uuid", "toSubActionId": "uuid", "amount": 5000.00, "description": "Remanejamento", "date": "2026-11-10" }
+
+// Método C (TAC): 50.000 na ação, 20.000 já vão para uma subação e 30.000 ficam a distribuir
+{ "actionId": "uuid", "amount": 50000.00, "description": "TAC nº 3", "date": "2026-11-05",
+  "allocations": [ { "subActionId": "uuid", "amount": 20000.00 } ] }
+
+// Distribuição
+{ "actionId": "uuid", "description": "Distribuição inicial",
+  "allocations": [ { "subActionId": "uuid", "amount": 60000.00 }, { "subActionId": "uuid", "amount": 30000.00 } ] }
+```
+
+Cada operação volta com `number` (sequencial), `method`, `methodLabel` (ex.: "Método B - Transferência entre ações"), quem fez, a data real (`operationDate`), quando foi registrada (`registeredAt`) e os lançamentos (`entries`) com o valor que entrou ou saiu de cada ação/subação. Todas as operações aceitam `date` no corpo (ver [Data real das operações](#data-real-das-operações)).
+
+### Regras
+
+- **Códigos:** únicos, sem diferenciar maiúsculas. O código da subação é único **em todo o sistema**, não só dentro da ação. O número do empenho também é único.
+- **Empenhado não se move:** os Métodos A e B e novos empenhos só usam o saldo disponível. Para liberar valor empenhado, anule a parte não liquidada do empenho.
+- **Inativação:** ação ou subação inativa não recebe empenhos nem transferências, mas os empenhos que já existem podem ser liquidados, pagos e anulados normalmente.
+- **Valores:** maiores que zero, com no máximo 2 casas decimais. Nenhum saldo fica negativo.
+- **Saldo insuficiente**, Método A entre ações diferentes, Método B dentro da mesma ação, alocação em subação de outra ação, ou ação/subação inativa: **422** com a explicação.
+- **Concorrência:** toda operação trava as ações envolvidas até terminar, então duas operações ao mesmo tempo não gastam o mesmo saldo.
+- **Histórico imutável:** operações não são editadas nem apagadas. Para corrigir, faça uma operação no sentido contrário.
 
 ---
 

@@ -212,3 +212,131 @@ CREATE TABLE IF NOT EXISTS files (
 
 -- Índice para buscas rápidas ao abrir a pasta de anexos de um registro
 CREATE INDEX IF NOT EXISTS idx_files_polymorphic ON files(entity_type, entity_id);
+
+
+-- ==============================================================================
+-- 5. MÓDULO FINANCEIRO (modules/finance)
+-- ==============================================================================
+-- Acesso pela categoria nativa com table_reference = 'finance_actions'.
+-- Os saldos gravados em finance_actions.total_amount e finance_sub_actions.balance são sempre
+-- a soma dos lançamentos (finance_entries); somar os lançamentos até uma data dá o saldo naquele dia.
+
+-- Ações: valor total = valor distribuído nas subações + saldo a distribuir
+CREATE TABLE IF NOT EXISTS finance_actions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code VARCHAR(50) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    total_amount NUMERIC(15,2) NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_finance_actions_code ON finance_actions (LOWER(code));
+
+-- Subações: código único em todo o sistema
+CREATE TABLE IF NOT EXISTS finance_sub_actions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    action_id UUID NOT NULL REFERENCES finance_actions(id) ON DELETE CASCADE,
+    code VARCHAR(50) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    balance NUMERIC(15,2) NOT NULL DEFAULT 0 CHECK (balance >= 0),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_finance_sub_actions_code ON finance_sub_actions (LOWER(code));
+CREATE INDEX IF NOT EXISTS idx_finance_sub_actions_action ON finance_sub_actions(action_id);
+
+-- Operações (imutáveis): OPENING, TRANSFER_BETWEEN_SUB_ACTIONS (Método A),
+-- TRANSFER_BETWEEN_ACTIONS (Método B), TAC (Método C) e DISTRIBUTION
+CREATE TABLE IF NOT EXISTS finance_operations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    number BIGSERIAL UNIQUE,                 -- Número sequencial da operação (ordem do histórico)
+    method VARCHAR(40) NOT NULL,
+    amount NUMERIC(15,2) NOT NULL CHECK (amount > 0),
+    description TEXT,
+    performed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_finance_operations_occurred_at ON finance_operations(occurred_at);
+
+-- Lançamentos (imutáveis), com sinal. sub_action_id nulo = mexe no valor total da ação;
+-- preenchido = mexe no saldo da subação
+CREATE TABLE IF NOT EXISTS finance_entries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    operation_id UUID NOT NULL REFERENCES finance_operations(id) ON DELETE RESTRICT,
+    action_id UUID NOT NULL REFERENCES finance_actions(id) ON DELETE RESTRICT,
+    sub_action_id UUID REFERENCES finance_sub_actions(id) ON DELETE RESTRICT,
+    amount NUMERIC(15,2) NOT NULL CHECK (amount <> 0)
+);
+CREATE INDEX IF NOT EXISTS idx_finance_entries_operation ON finance_entries(operation_id);
+CREATE INDEX IF NOT EXISTS idx_finance_entries_action ON finance_entries(action_id);
+CREATE INDEX IF NOT EXISTS idx_finance_entries_sub_action ON finance_entries(sub_action_id);
+
+-- ------------------------------------------------------------------------------
+-- 5.1 Execução da despesa: empenho -> liquidação -> pagamento (e anulação de empenho)
+-- ------------------------------------------------------------------------------
+
+-- Tipo do lançamento: BUDGET (dotação), COMMITTED (empenhado), LIQUIDATED (liquidado), PAID (pago)
+ALTER TABLE finance_entries ADD COLUMN IF NOT EXISTS kind VARCHAR(20) NOT NULL DEFAULT 'BUDGET';
+
+-- Execução acumulada na subação. Disponível = balance (dotação) - committed_amount
+ALTER TABLE finance_sub_actions ADD COLUMN IF NOT EXISTS committed_amount NUMERIC(15,2) NOT NULL DEFAULT 0;
+ALTER TABLE finance_sub_actions ADD COLUMN IF NOT EXISTS liquidated_amount NUMERIC(15,2) NOT NULL DEFAULT 0;
+ALTER TABLE finance_sub_actions ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(15,2) NOT NULL DEFAULT 0;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_finance_sub_actions_execution') THEN
+        ALTER TABLE finance_sub_actions ADD CONSTRAINT ck_finance_sub_actions_execution
+            CHECK (paid_amount >= 0 AND paid_amount <= liquidated_amount
+                   AND liquidated_amount <= committed_amount AND committed_amount <= balance);
+    END IF;
+END $$;
+
+-- Empenhos (notas de empenho)
+CREATE TABLE IF NOT EXISTS finance_commitments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    number VARCHAR(50) NOT NULL,             -- Ex: '2026NE000123'
+    sub_action_id UUID NOT NULL REFERENCES finance_sub_actions(id) ON DELETE RESTRICT,
+    action_id UUID NOT NULL REFERENCES finance_actions(id) ON DELETE RESTRICT,
+    creditor VARCHAR(255) NOT NULL,          -- Favorecido
+    description TEXT,
+    amount NUMERIC(15,2) NOT NULL CHECK (amount > 0),        -- Valor original
+    cancelled_amount NUMERIC(15,2) NOT NULL DEFAULT 0,       -- Anulado
+    liquidated_amount NUMERIC(15,2) NOT NULL DEFAULT 0,
+    paid_amount NUMERIC(15,2) NOT NULL DEFAULT 0,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT ck_finance_commitments_execution
+        CHECK (cancelled_amount >= 0 AND paid_amount >= 0 AND paid_amount <= liquidated_amount
+               AND liquidated_amount <= amount - cancelled_amount)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_finance_commitments_number ON finance_commitments (LOWER(number));
+CREATE INDEX IF NOT EXISTS idx_finance_commitments_sub_action ON finance_commitments(sub_action_id);
+CREATE INDEX IF NOT EXISTS idx_finance_commitments_action ON finance_commitments(action_id);
+
+-- Operações de empenho, anulação, liquidação e pagamento apontam para o empenho
+ALTER TABLE finance_operations
+    ADD COLUMN IF NOT EXISTS commitment_id UUID REFERENCES finance_commitments(id) ON DELETE RESTRICT;
+CREATE INDEX IF NOT EXISTS idx_finance_operations_commitment ON finance_operations(commitment_id);
+
+-- ------------------------------------------------------------------------------
+-- 5.2 Data real das operações (ex.: data do empenho, do pagamento)
+-- ------------------------------------------------------------------------------
+-- operation_date define os saldos em cada dia e a ordem do histórico; occurred_at continua sendo
+-- o momento do registro. Linhas antigas recebem a data do registro (migração idempotente).
+ALTER TABLE finance_operations ADD COLUMN IF NOT EXISTS operation_date DATE;
+UPDATE finance_operations SET operation_date = occurred_at::date WHERE operation_date IS NULL;
+ALTER TABLE finance_operations ALTER COLUMN operation_date SET DEFAULT CURRENT_DATE;
+ALTER TABLE finance_operations ALTER COLUMN operation_date SET NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_finance_operations_operation_date ON finance_operations(operation_date);
+
+ALTER TABLE finance_commitments ADD COLUMN IF NOT EXISTS commitment_date DATE;
+UPDATE finance_commitments SET commitment_date = created_at::date WHERE commitment_date IS NULL;
+ALTER TABLE finance_commitments ALTER COLUMN commitment_date SET DEFAULT CURRENT_DATE;
+ALTER TABLE finance_commitments ALTER COLUMN commitment_date SET NOT NULL;
