@@ -1,0 +1,58 @@
+package com.secmulher.modules.core.controllers;
+
+import java.net.URI;
+import java.util.List;
+import java.util.UUID;
+
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.secmulher.modules.core.domain.dtos.CategoryDtos.CategoryRequest;
+import com.secmulher.modules.core.domain.dtos.CategoryDtos.CategoryResponse;
+import com.secmulher.modules.core.domain.services.CategoryService;
+
+import jakarta.validation.Valid;
+
+@RestController
+@RequestMapping("/categories")
+public class CategoryController {
+    final CategoryService categoryService;
+
+    public CategoryController(CategoryService categoryService) {
+        this.categoryService = categoryService;
+    }
+
+    @GetMapping
+    public List<CategoryResponse> findAll() {
+        return categoryService.findAll();
+    }
+
+    @GetMapping("/{id}")
+    public CategoryResponse findById(@PathVariable UUID id) {
+        return categoryService.findById(id);
+    }
+
+    @PostMapping
+    public ResponseEntity<CategoryResponse> create(@RequestBody @Valid CategoryRequest request) {
+        CategoryResponse created = categoryService.create(request);
+        return ResponseEntity.created(URI.create("/categories/" + created.id())).body(created);
+    }
+
+    @PutMapping("/{id}")
+    public CategoryResponse update(@PathVariable UUID id, @RequestBody @Valid CategoryRequest request) {
+        return categoryService.update(id, request);
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable UUID id) {
+        categoryService.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+}

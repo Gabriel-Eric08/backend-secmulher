@@ -140,23 +140,39 @@ Limite de upload: **20 MB** por arquivo.
 ```
 src/main/java/com/secmulher/
 ├── Application.java
-├── controllers/            # Rotas REST + GlobalExceptionHandler (formato dos erros)
-├── domain/
-│   ├── access/             # AccessControlService e CategoryAccess: regras de autorização
-│   ├── dtos/               # Records de request/response
-│   ├── enums/              # RecordType, FilterOperator
-│   ├── exceptions/         # NotFound, Forbidden, Conflict, Business, FieldValidation...
-│   └── services/           # Regras de negócio (um service por recurso)
-└── infra/
-    ├── config/             # AdminBootstrap (primeiro administrador)
-    ├── entities/           # Entidades JPA e enums (FieldType, ActivityType, ConfidentialityLevel)
-    ├── repositories/       # Spring Data + DynamicEntitySearchRepository (filtros sobre JSONB)
-    ├── security/           # SecurityConfig, TokenService, CurrentUserProvider
-    └── seed/               # DemoDataSeeder (profile "seed")
+└── modules/
+    ├── core/                       # Tudo que é geral e compartilhado entre os setores
+    │   ├── controllers/            # Rotas REST + GlobalExceptionHandler (formato dos erros)
+    │   ├── domain/
+    │   │   ├── access/             # AccessControlService e CategoryAccess: regras de autorização
+    │   │   ├── dtos/               # Records de request/response
+    │   │   ├── enums/              # RecordType, FilterOperator
+    │   │   ├── exceptions/         # NotFound, Forbidden, Conflict, Business, FieldValidation...
+    │   │   └── services/           # Regras de negócio (um service por recurso)
+    │   └── infra/
+    │       ├── config/             # AdminBootstrap (primeiro administrador)
+    │       ├── entities/           # Entidades JPA e enums (FieldType, ActivityType, ConfidentialityLevel)
+    │       ├── repositories/       # Spring Data + DynamicEntitySearchRepository (filtros sobre JSONB)
+    │       ├── security/           # SecurityConfig, TokenService, CurrentUserProvider
+    │       ├── seed/               # DemoDataSeeder (profile "seed")
+    │       └── storage/            # FileStorage e LocalFileStorage
+    └── finance/                    # Setor financeiro (esqueleto, ainda sem rotas)
+        ├── controllers/
+        ├── domain/
+        └── infra/
 src/main/resources/
 ├── application.properties
-└── db/init.sql             # Schema do banco (fora de static/, não é publicado via HTTP)
+└── db/init.sql                     # Schema do banco (fora de static/, não é publicado via HTTP)
 ```
+
+### Como criar um módulo de setor
+
+1. Crie `modules/<setor>/` com as mesmas pastas do core: `controllers/`, `domain/` (`dtos/`, `enums/`, `services/`) e `infra/` (`entities/`, `repositories/`).
+2. O setor pode usar tudo do core (exceções, `AccessControlService`, `CurrentUserProvider`, `FileStorage`, entidades). O core **não** importa nada de um setor, e um setor não importa de outro.
+3. Use um prefixo próprio nas rotas (ex.: `/finance/...`) para não colidir com as rotas do core.
+4. Tabelas novas entram no `db/init.sql`, depois das tabelas do core (o Hibernate roda com `ddl-auto=validate`).
+
+Não é preciso registrar nada: como `Application` fica em `com.secmulher`, o Spring encontra sozinho os componentes, entidades e repositórios de qualquer módulo.
 
 ---
 
