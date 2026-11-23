@@ -32,6 +32,7 @@ Foi pensada para serviços de atendimento como uma Secretaria da Mulher, onde di
   - [Arquivos](#arquivos)
 - [Módulo financeiro](#módulo-financeiro)
 - [Módulo de frotas](#módulo-de-frotas)
+- [Módulo de emendas](#módulo-de-emendas)
 - [Erros](#erros)
 - [Dados de demonstração](#dados-de-demonstração)
 - [Fluxo típico de uso](#fluxo-típico-de-uso)
@@ -134,6 +135,7 @@ No primeiro início, se o banco não tiver nenhum usuário, o administrador defi
 | `STORAGE_PATH` | `./storage` | Pasta onde os documentos enviados são gravados (no `.gitignore`) |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000` | Origens do front autorizadas, separadas por vírgula |
 | `SEED_PASSWORD` | `Demo@2026` | Senha dos usuários de demonstração (profile `seed`) |
+| `AMENDMENTS_DEADLINE_ALERT_DAYS` | `30` | Emendas: vigência do Termo de Fomento que termina em até N dias aparece como `NEAR` (perto do prazo) |
 
 Limite de upload: **20 MB** por arquivo.
 
@@ -178,9 +180,12 @@ src/main/java/com/secmulher/
     │   └── infra/
     │       ├── entities/           # Driver, Vehicle, Trip, TripParticipant
     │       └── repositories/
-    └── amendments/                 # Emendas parlamentares (em construção: por enquanto, só o banco)
+    └── amendments/                 # Emendas parlamentares: dados da planilha, pendências e linha do tempo
+        ├── controllers/            # /amendments, /amendments/sectors
         ├── domain/
-        │   └── access/             # AmendmentAccessService (permissão na categoria 'amendments')
+        │   ├── access/             # AmendmentAccessService (permissão na categoria 'amendments')
+        │   ├── dtos/
+        │   └── services/           # Cadastro e filtros, acompanhamento (pendências, conclusão), linha do tempo
         └── infra/
             ├── entities/           # Amendment, AmendmentSector, AmendmentPendency, AmendmentActivity
             └── repositories/
@@ -855,6 +860,72 @@ Ao agendar ou editar, o motorista e o veículo ficam travados durante a checagem
 - **Sigilo das atendidas:** quem não pode ler o nome das atendidas (coluna `nome` da categoria de clientes) vê participantes `CLIENT` com `hidden: true` e sem nome, telefone, documento ou observações, e não pode incluir atendidas em viagens.
 
 A lista completa de rotas, campos e colunas está no [`DICIONARIO.md`](DICIONARIO.md#frotas).
+
+---
+
+## Módulo de emendas
+
+Acompanhamento das emendas parlamentares da planilha da LOA. Cada emenda guarda todas as colunas da planilha e, para qualquer emenda, uma técnica pode registrar atividade: alterar campos, anotar, abrir impedimento ou espera, resolver, concluir.
+
+### Acesso
+
+Crie uma **categoria nativa** com `tableReference: "amendments"` (ex.: "Emendas") e dê permissão nela. Administradores globais têm acesso total.
+
+| Permissão | Libera |
+|---|---|
+| Leitura | Emendas, filtros, painel, pendências, linha do tempo e setores |
+| Criação | Cadastrar emendas e setores |
+| Edição | Alterar campos, anotar, abrir/resolver pendências, concluir, cancelar e reabrir |
+| Exclusão | Excluir emendas e setores sem emendas |
+
+### Situação da emenda
+
+As colunas de status da planilha (STATUS FINANCEIRO, SITUAÇÃO etc.) são texto livre. Os filtros usam a situação controlada pelo sistema (`status`):
+
+```
+IN_PROGRESS ──(abre espera)──> WAITING ──(abre impedimento)──> BLOCKED
+     ^                            │                               │
+     └──────(resolve todas as pendências abertas)─────────────────┘
+IN_PROGRESS ──(concluir, sem pendências)──> COMPLETED ──(reabrir)──> IN_PROGRESS
+qualquer aberta ──(cancelar: encerra pendências)──> CANCELLED ──(reabrir)──> IN_PROGRESS
+```
+
+- **Pendência** = impedimento (`IMPEDIMENT`) ou espera (`WAITING`), com `description` e `waitingOn` (de quem/de quê depende). Fica aberta até ser resolvida com `resolution`.
+- Emenda concluída ou cancelada não é editada nem recebe pendência: reabra antes. Anotações são sempre aceitas.
+- Toda atividade vai para a linha do tempo (`GET /amendments/{id}/timeline`); o `PUT` registra só os campos que mudaram, com o valor antigo e o novo.
+
+### Filtros mais usados
+
+```
+GET /amendments?pending=true&sort=OLDEST_PENDENCY        # pendentes, a pendência mais antiga primeiro
+GET /amendments?idleDays=30&sort=IDLE                    # paradas há 30 dias ou mais
+GET /amendments?deadlineWithinDays=60&sort=DEADLINE      # vigência do TF termina nos próximos 60 dias
+GET /amendments?expired=true                             # vigência vencida sem conclusão
+GET /amendments?status=COMPLETED                         # concluídas
+GET /amendments?mine=true&open=true                      # minhas emendas em aberto
+GET /amendments?q=recife&exerciseYear=2026               # busca livre
+GET /amendments/summary                                  # contadores para o painel
+```
+
+Cada emenda vem com `idleDays` (dias desde a última atividade), `daysToDeadline` e `deadlineStatus` (`NO_TERM`, `OK`, `NEAR`, `EXPIRED`, `CLOSED`). A janela de `NEAR` é `AMENDMENTS_DEADLINE_ALERT_DAYS` (padrão 30 dias).
+
+### Registrar atividade
+
+```json
+POST /amendments/{id}/pendencies
+{ "kind": "WAITING", "description": "Certidões do beneficiário", "waitingOn": "Beneficiário" }
+
+POST /amendments/{id}/pendencies/{pendencyId}/resolve
+{ "resolution": "Certidões entregues" }
+
+POST /amendments/{id}/notes
+{ "description": "Contato com a SEPLAG", "occurredAt": "2026-11-20T10:00:00" }
+
+POST /amendments/{id}/complete
+{ "description": "Pagamento efetuado" }
+```
+
+A lista completa de rotas, campos e colunas está no [`DICIONARIO.md`](DICIONARIO.md#emendas).
 
 ---
 

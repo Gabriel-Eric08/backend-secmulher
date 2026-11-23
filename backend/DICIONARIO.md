@@ -533,6 +533,17 @@ A coluna **Planilha** indica o cabeçalho correspondente na planilha de emendas.
 | | `REOPENED` | Reabertura de emenda concluída ou cancelada. |
 | | `CANCELLED` | Cancelamento. |
 | | `IMPORTED` | Criação ou atualização pela importação da planilha. |
+| `DeadlineStatus` (derivado) | `NO_TERM` | Sem data de vigência. |
+| | `OK` | Dentro do prazo, fora da janela de alerta. |
+| | `NEAR` | Vigência termina em até `app.amendments.deadline-alert-days` dias (padrão 30). |
+| | `EXPIRED` | Vigência já passou e a emenda não foi concluída. |
+| | `CLOSED` | Emenda concluída ou cancelada: o prazo não se aplica mais. |
+| `AmendmentSort` (listagem) | `RECENT` | Última atividade mais recente primeiro (padrão). |
+| | `IDLE` | Parada há mais tempo primeiro. |
+| | `DEADLINE` | Vigência mais próxima primeiro (sem vigência no fim). |
+| | `OLDEST_PENDENCY` | Pendência aberta mais antiga primeiro (sem pendência no fim). |
+| | `AMOUNT` | Maior valor atual primeiro. |
+| | `PARLIAMENTARIAN` | Parlamentar em ordem alfabética. |
 
 ---
 
@@ -665,6 +676,40 @@ Acesso pela categoria nativa com `table_reference = 'fleet_trips'`. Datas e hora
 **Regras de escala** (criação e edição, com motorista e veículo travados durante a checagem): volta depois da ida (400); motorista e veículo ativos (422); CNH válida até o dia da volta (422); sem sobreposição com outra viagem não cancelada do motorista ou do veículo (409, informando a viagem em conflito); participantes ≤ `capacity` (422); sem participante repetido (400).
 
 **Campos de resposta da viagem:** `number`, `status`, `statusLabel`, `driver` (`id`, `name`, `phone`), `vehicle` (`id`, `plate`, `brand`, `model`, `capacity`), `participantCount`, `participants[]` (com `hidden`), `actualDepartureAt`, `actualReturnAt`, `startOdometerKm`, `endOdometerKm`, `distanceKm`, `completionNotes`, `cancellationReason`, `cancelledAt`, `cancelledBy`.
+
+
+### Emendas
+
+Acesso pela categoria nativa com `table_reference = 'amendments'`. Datas `AAAA-MM-DD`; datas e horas `AAAA-MM-DDTHH:MM[:SS]`.
+
+| Método | Rota | Acesso | Descrição |
+|---|---|---|---|
+| `GET` | `/amendments/sectors` | leitura | Lista setores. |
+| `GET` | `/amendments/sectors/{id}` | leitura | Busca setor. |
+| `POST` | `/amendments/sectors` | criação | Cria: `name`, `description`. |
+| `PUT` | `/amendments/sectors/{id}` | edição | Altera os mesmos campos e `isActive`. |
+| `DELETE` | `/amendments/sectors/{id}` | exclusão | Exclui setor sem emendas (409 caso contrário). |
+| `GET` | `/amendments` | leitura | Lista emendas com filtros (abaixo) e `sort` (`AmendmentSort`). |
+| `GET` | `/amendments/summary?exerciseYear=&sectorId=&responsibleUserId=&mine=&idleDays=` | leitura | Contadores: `total`, `byStatus`, `open`, `pending`, `expired`, `nearDeadline` (com `deadlineAlertDays`) e `idle` (paradas há `idleDays` dias ou mais, padrão 30). |
+| `GET` | `/amendments/options` | leitura | Valores já usados, para os filtros: `exerciseYears`, `cycles`, `parliamentarians`, `municipalities`, `categories`, `types`, `technicalAreas`. |
+| `GET` | `/amendments/{id}` | leitura | Uma emenda. |
+| `POST` | `/amendments` | criação | Cadastra com todos os campos da planilha (ver `amendments`; nomes em camelCase, ex.: `termEndDate`), `sectorId` e `responsibleUserId`. Obrigatórios: `exerciseYear`, `parliamentarian`. |
+| `PUT` | `/amendments/{id}` | edição | Substitui os campos (campo ausente = vazio) e aceita `comment` para a linha do tempo. Registra `FIELD_UPDATE` com os campos que mudaram. |
+| `DELETE` | `/amendments/{id}` | exclusão | Exclui a emenda com pendências e linha do tempo. |
+| `GET` | `/amendments/{id}/timeline` | leitura | Linha do tempo (mais recente primeiro). |
+| `GET` | `/amendments/{id}/pendencies?open=` | leitura | Pendências (`open=true` só abertas, `false` só resolvidas). |
+| `POST` | `/amendments/{id}/notes` | edição | Anotação: `description`, `occurredAt` (padrão agora). |
+| `POST` | `/amendments/{id}/pendencies` | edição | Abre pendência: `kind` (`IMPEDIMENT`/`WAITING`), `description`, `waitingOn`, `openedAt`. |
+| `POST` | `/amendments/{id}/pendencies/{pendencyId}/resolve` | edição | Resolve: `resolution` (obrigatório), `resolvedAt`. |
+| `POST` | `/amendments/{id}/complete` | edição | Conclui: `description`, `completedAt`. |
+| `POST` | `/amendments/{id}/cancel` | edição | Cancela: `reason` (obrigatório). |
+| `POST` | `/amendments/{id}/reopen` | edição | Reabre concluída ou cancelada: `reason` (obrigatório). |
+
+**Filtros de `GET /amendments`** (todos opcionais, combinados com "e"): `status` (um ou vários: `?status=WAITING&status=BLOCKED`), `open` (não concluída nem cancelada), `pending` (com pendência aberta), `pendencyKind` (com pendência aberta daquele tipo), `idleDays` (parada há N dias ou mais), `deadlineWithinDays` (vigência entre hoje e hoje + N), `expired` (vigência vencida), `sectorId`, `responsibleUserId`, `mine` (técnica responsável = usuário logado), `exerciseYear`, `cycle` (igual, sem diferenciar maiúsculas), `parliamentarian` e `municipality` (contém), `q` (contém, em parlamentar, beneficiário, município, objeto, códigos, Nº SEI, Nº TF, técnica e nome da ação). `idleDays`, `deadlineWithinDays` e `expired` só trazem emendas abertas.
+
+**Regras:** código único no ano (409); setor atribuído precisa estar ativo (422); emenda concluída ou cancelada não é editada nem recebe pendência (422, reabra antes), mas aceita anotação; concluir exige zero pendências abertas (422); cancelar encerra as pendências abertas; datas informadas (`occurredAt`, `openedAt`, `resolvedAt`, `completedAt`) não podem ser no futuro (400) e a resolução não pode ser antes da abertura (422). Toda atividade avança `last_activity_at` (nunca para trás) e as mudanças de situação entram em `changes.status`.
+
+**Campos de resposta da emenda:** todos os campos da planilha, `sector` (`id`, `name`), `responsibleUser` (`id`, `name`), `status`, `statusLabel`, `lastActivityAt`, `idleDays` (dias desde a última atividade), `daysToDeadline` (negativo = vencida), `deadlineStatus`, `openPendencies`, `oldestOpenPendencyAt`, `completedAt`/`completedBy`, `cancelledAt`/`cancelledBy`. **Pendência:** `kind`, `kindLabel`, `description`, `waitingOn`, `open`, `openedAt`/`openedBy`, `resolvedAt`/`resolvedBy`, `resolution`, `daysOpen`. **Atividade:** `kind`, `kindLabel`, `description`, `changes`, `pendencyId`, `user`, `occurredAt`, `createdAt`.
 
 
 ---
