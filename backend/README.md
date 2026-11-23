@@ -169,14 +169,20 @@ src/main/java/com/secmulher/
     │   └── infra/
     │       ├── entities/           # FinanceAction, FinanceSubAction, FinanceOperation, FinanceEntry, FinanceCommitment
     │       └── repositories/
-    └── fleet/                      # Frotas: motoristas, veículos, viagens e participantes
-        ├── controllers/            # /fleet/drivers, /vehicles, /trips, /availability
+    ├── fleet/                      # Frotas: motoristas, veículos, viagens e participantes
+    │   ├── controllers/            # /fleet/drivers, /vehicles, /trips, /availability
+    │   ├── domain/
+    │   │   ├── access/             # FleetAccessService (permissão na categoria 'fleet_trips')
+    │   │   ├── dtos/
+    │   │   └── services/           # Cadastro, escala com checagem de conflitos, ciclo de vida da viagem
+    │   └── infra/
+    │       ├── entities/           # Driver, Vehicle, Trip, TripParticipant
+    │       └── repositories/
+    └── amendments/                 # Emendas parlamentares (em construção: por enquanto, só o banco)
         ├── domain/
-        │   ├── access/             # FleetAccessService (permissão na categoria 'fleet_trips')
-        │   ├── dtos/
-        │   └── services/           # Cadastro, escala com checagem de conflitos, ciclo de vida da viagem
+        │   └── access/             # AmendmentAccessService (permissão na categoria 'amendments')
         └── infra/
-            ├── entities/           # Driver, Vehicle, Trip, TripParticipant
+            ├── entities/           # Amendment, AmendmentSector, AmendmentPendency, AmendmentActivity
             └── repositories/
 src/main/resources/
 ├── application.properties
@@ -216,6 +222,10 @@ Não é preciso registrar nada: como `Application` fica em `com.secmulher`, o Sp
 | `fleet_vehicles` | Veículos: `plate` (única), `model`, `capacity` (passageiros, sem o motorista), `odometer_km` |
 | `fleet_trips` | Viagens: `number`, `status`, `purpose`, partida/destino, ida e volta previstas, motorista, veículo, execução (saída/volta real, km) e cancelamento |
 | `fleet_trip_participants` | Participantes: `participant_type` (`USER`, `CLIENT`, `EXTERNAL`), `user_id`/`client_id`, `name` no momento do cadastro, telefone, documento |
+| `amendment_sectors` | Setores responsáveis por emendas: `name` (único), `description`, `is_active` |
+| `amendments` | Emendas parlamentares: todas as colunas da planilha (parlamentar, ciclo, códigos, ação, beneficiário, município, objeto, valor atual, status em texto livre, SEI, Termo de Fomento e vigência, PF, empenho, OB, pagamento, GTV), setor e técnica responsável, `status` controlado pelo sistema e `last_activity_at` |
+| `amendment_pendencies` | Impedimentos (`IMPEDIMENT`) e esperas (`WAITING`) de cada emenda; abertas enquanto `resolved_at` é nulo |
+| `amendment_activities` | Linha do tempo imutável de cada emenda: `kind`, `description`, `changes` (campos alterados), pendência relacionada |
 
 > Uma categoria não pode ser excluída (**409**) enquanto tiver registros em `dynamic_entities` ou se algum de seus tipos de registro já tiver sido usado na linha do tempo. Nesse caso, desative-a com `isActive: false`.
 

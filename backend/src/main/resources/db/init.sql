@@ -427,3 +427,125 @@ CREATE TABLE IF NOT EXISTS fleet_trip_participants (
 CREATE INDEX IF NOT EXISTS idx_fleet_trip_participants_trip ON fleet_trip_participants(trip_id);
 CREATE INDEX IF NOT EXISTS idx_fleet_trip_participants_user ON fleet_trip_participants(user_id);
 CREATE INDEX IF NOT EXISTS idx_fleet_trip_participants_client ON fleet_trip_participants(client_id);
+
+-- ==============================================================================
+-- 7. MÓDULO DE EMENDAS (modules/amendments)
+-- ==============================================================================
+-- Acesso pela categoria nativa com table_reference = 'amendments'.
+-- Cada emenda é uma linha da planilha de emendas parlamentares (LOA). As colunas de status da planilha
+-- são texto livre; a situação usada nos filtros é a coluna status, controlada pelo sistema.
+
+-- Setores responsáveis por emendas
+CREATE TABLE IF NOT EXISTS amendment_sectors (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_amendment_sectors_name ON amendment_sectors (LOWER(name));
+
+-- Emendas. status: IN_PROGRESS, WAITING (espera aberta), BLOCKED (impedimento aberto), COMPLETED, CANCELLED
+CREATE TABLE IF NOT EXISTS amendments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    -- Identificação (planilha)
+    exercise_year INTEGER NOT NULL,                  -- Ano da LOA (ex: 2026)
+    cycle VARCHAR(50),                               -- CICLO (ex: '4º CICLO')
+    parliamentarian VARCHAR(255) NOT NULL,           -- PARLAMENTAR
+    category VARCHAR(100),                           -- CATEGORIA
+    alepe_code VARCHAR(50),                          -- COD ALEPE
+    code VARCHAR(50),                                -- COD (chave da importação, único no ano)
+    action_code VARCHAR(50),                         -- AÇÃO_COD
+    action_name VARCHAR(255),                        -- AÇÃO_NOME
+    sub_action VARCHAR(255),                         -- SUBAÇÃO
+    expense_group VARCHAR(20),                       -- GD (grupo de despesa)
+    application_modality VARCHAR(20),                -- MOD (modalidade de aplicação)
+    beneficiary VARCHAR(255),                        -- BENEFICIÁRIO
+    municipality VARCHAR(150),                       -- MUNICÍPIO
+    object TEXT,                                     -- OBJETO
+    type VARCHAR(100),                               -- TIPO
+    under_change VARCHAR(255),                       -- EM ALTERAÇÃO
+    current_amount NUMERIC(15,2) CHECK (current_amount >= 0),  -- VALOR ATUAL
+    -- Monitoramento (planilha, texto livre)
+    financial_status VARCHAR(255),                   -- STATUS FINANCEIRO
+    seplag_impediment TEXT,                          -- IMPEDIMENTO TÉCNICO - SEPLAG
+    documental_status VARCHAR(255),                  -- STATUS DOCUMENTAL/FÍSICO
+    details TEXT,                                    -- DETALHAMENTO
+    notes TEXT,                                      -- OBSERVAÇÕES
+    -- Responsáveis
+    technical_area VARCHAR(255),                     -- ÁREA TÉCNICA (texto da planilha)
+    sector_id UUID REFERENCES amendment_sectors(id) ON DELETE SET NULL,
+    responsible_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    responsible_name VARCHAR(255),                   -- TÉCNICA RESPONSÁVEL (nome)
+    -- Processo e Termo de Fomento
+    sei_number VARCHAR(50),                          -- Nº SEI
+    technical_opinion TEXT,                          -- PARECER TÉCNICO
+    term_number VARCHAR(50),                         -- Nº TERMO FOMENTO (TF)
+    term_end_date DATE,                              -- VIGÊNCIA (TF): prazo limite para concluir
+    -- Execução financeira (SEFAZ)
+    pf_number VARCHAR(50),                           -- PF Nº
+    pf_date DATE,                                    -- DATA PF
+    sefaz_pf VARCHAR(100),                           -- SEFAZ_PF (DT./AUT.)
+    commitment_number VARCHAR(50),                   -- Nº EMPENHO
+    dh_number VARCHAR(50),                           -- DH
+    le_number VARCHAR(50),                           -- LE
+    pd VARCHAR(100),                                 -- PD (Nº/DT)
+    ob_number VARCHAR(50),                           -- Nº OB
+    payment_date DATE,                               -- DATA PAGTO
+    -- Sistema GTV
+    call_number VARCHAR(50),                         -- Nº CHAMAMENTO (DP)
+    proposal_number VARCHAR(50),                     -- Nº PROPOSTA
+    situation VARCHAR(255),                          -- SITUAÇÃO (texto da planilha)
+    -- Controle do sistema
+    status VARCHAR(20) NOT NULL DEFAULT 'IN_PROGRESS',
+    last_activity_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    completed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    cancelled_at TIMESTAMP WITH TIME ZONE,
+    cancelled_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_amendments_year_code ON amendments (exercise_year, LOWER(code))
+    WHERE code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_amendments_status ON amendments(status);
+CREATE INDEX IF NOT EXISTS idx_amendments_term_end_date ON amendments(term_end_date);
+CREATE INDEX IF NOT EXISTS idx_amendments_last_activity ON amendments(last_activity_at);
+CREATE INDEX IF NOT EXISTS idx_amendments_responsible ON amendments(responsible_user_id);
+CREATE INDEX IF NOT EXISTS idx_amendments_sector ON amendments(sector_id);
+
+-- Pendências: impedimento (IMPEDIMENT) ou espera (WAITING). Abertas enquanto resolved_at for nulo
+CREATE TABLE IF NOT EXISTS amendment_pendencies (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    amendment_id UUID NOT NULL REFERENCES amendments(id) ON DELETE CASCADE,
+    kind VARCHAR(20) NOT NULL,
+    description TEXT NOT NULL,
+    waiting_on VARCHAR(255),                         -- De quem / de quê (ex: 'SEPLAG', 'Beneficiário')
+    opened_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    opened_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    resolved_at TIMESTAMP WITH TIME ZONE,
+    resolved_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    resolution TEXT,
+    CONSTRAINT ck_amendment_pendencies_resolution CHECK (resolved_at IS NULL OR resolved_at >= opened_at)
+);
+CREATE INDEX IF NOT EXISTS idx_amendment_pendencies_amendment ON amendment_pendencies(amendment_id);
+CREATE INDEX IF NOT EXISTS idx_amendment_pendencies_open ON amendment_pendencies(amendment_id)
+    WHERE resolved_at IS NULL;
+
+-- Linha do tempo da emenda (imutável)
+CREATE TABLE IF NOT EXISTS amendment_activities (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    amendment_id UUID NOT NULL REFERENCES amendments(id) ON DELETE CASCADE,
+    kind VARCHAR(30) NOT NULL,
+    description TEXT,
+    -- Ex: {"financial_status": {"antigo": "Aguardando PF", "novo": "PF autorizada"}}
+    changes JSONB,
+    pendency_id UUID REFERENCES amendment_pendencies(id) ON DELETE SET NULL,
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_amendment_activities_amendment ON amendment_activities(amendment_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_amendment_activities_user ON amendment_activities(user_id);

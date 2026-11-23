@@ -11,6 +11,7 @@ Referência de **tudo o que existe na aplicação**: tabelas e colunas, valores 
 - [Tabelas do core](#tabelas-do-core)
 - [Tabelas do módulo financeiro](#tabelas-do-módulo-financeiro)
 - [Tabelas do módulo de frotas](#tabelas-do-módulo-de-frotas)
+- [Tabelas do módulo de emendas](#tabelas-do-módulo-de-emendas)
 - [Valores de domínio (enums)](#valores-de-domínio-enums)
 - [Rotas da API](#rotas-da-api)
 - [Glossário](#glossário)
@@ -40,6 +41,7 @@ Referência de **tudo o que existe na aplicação**: tabelas e colunas, valores 
 | core | `com.secmulher.modules.core` | Usuários, autenticação, categorias, permissões, clientes, entidades dinâmicas, linha do tempo, documentos. |
 | finance | `com.secmulher.modules.finance` | Ações, subações, operações orçamentárias (Métodos A/B/C) e execução da despesa (empenho, liquidação, pagamento). |
 | fleet | `com.secmulher.modules.fleet` | Frotas: motoristas, veículos, viagens e participantes; agenda dos motoristas e disponibilidade. |
+| amendments | `com.secmulher.modules.amendments` | Emendas parlamentares: dados da planilha de emendas (LOA), setores responsáveis, pendências (impedimentos e esperas) e linha do tempo de cada emenda. |
 
 ---
 
@@ -350,6 +352,121 @@ Derivado: **distância** (`distanceKm` na API) = `end_odometer_km` − `start_od
 
 ---
 
+## Tabelas do módulo de emendas
+
+Acesso pela categoria nativa com `table_reference = 'amendments'`. Cada emenda é uma linha da planilha de emendas parlamentares (LOA, ciclos da SEPLAG). As colunas de status da planilha são **texto livre** e entram como vieram; a situação usada nos filtros é `amendments.status`, controlada pelo sistema.
+
+Relações:
+
+```
+amendment_sectors 1─N amendments 1─N amendment_pendencies
+                          │                 │
+                          1─N amendment_activities (pendency_id opcional)
+```
+
+### `amendment_sectors` — setores responsáveis
+
+| Coluna | Tipo | Obrig. | Descrição |
+|---|---|---|---|
+| `id` | UUID | sim | Identificador. |
+| `name` | VARCHAR(255) | sim | Nome do setor, único sem diferenciar maiúsculas (`uq_amendment_sectors_name`). |
+| `description` | TEXT | não | Descrição. |
+| `is_active` | BOOLEAN | sim | Setor inativo não recebe novas emendas. Padrão `true`. |
+| `created_at` / `updated_at` | TIMESTAMPTZ | não | Criação e última alteração. |
+
+### `amendments` — emendas
+
+A coluna **Planilha** indica o cabeçalho correspondente na planilha de emendas.
+
+| Coluna | Tipo | Obrig. | Planilha | Descrição |
+|---|---|---|---|---|
+| `id` | UUID | sim | — | Identificador. |
+| `exercise_year` | INTEGER | sim | LOA | Ano da Lei Orçamentária Anual (ex.: `2026`). |
+| `cycle` | VARCHAR(50) | não | CICLO | Ciclo da SEPLAG (ex.: `4º CICLO`). |
+| `parliamentarian` | VARCHAR(255) | sim | PARLAMENTAR | Parlamentar autor da emenda. |
+| `category` | VARCHAR(100) | não | CATEGORIA | Categoria da emenda. |
+| `alepe_code` | VARCHAR(50) | não | COD ALEPE | Código da emenda na ALEPE. |
+| `code` | VARCHAR(50) | não | COD | Código da emenda. Único no ano sem diferenciar maiúsculas (`uq_amendments_year_code`); é a chave da importação da planilha. |
+| `action_code` | VARCHAR(50) | não | AÇÃO_COD | Código da ação orçamentária. |
+| `action_name` | VARCHAR(255) | não | AÇÃO_NOME | Nome da ação orçamentária. |
+| `sub_action` | VARCHAR(255) | não | SUBAÇÃO | Subação. |
+| `expense_group` | VARCHAR(20) | não | GD | Grupo de despesa. |
+| `application_modality` | VARCHAR(20) | não | MOD | Modalidade de aplicação. |
+| `beneficiary` | VARCHAR(255) | não | BENEFICIÁRIO | Entidade beneficiária. |
+| `municipality` | VARCHAR(150) | não | MUNICÍPIO | Município. |
+| `object` | TEXT | não | OBJETO | Objeto da emenda. |
+| `type` | VARCHAR(100) | não | TIPO | Tipo. |
+| `under_change` | VARCHAR(255) | não | EM ALTERAÇÃO | Indicação de alteração em andamento (texto livre). |
+| `current_amount` | NUMERIC(15,2) | não | VALOR ATUAL | Valor atual (≥ 0). |
+| `financial_status` | VARCHAR(255) | não | STATUS FINANCEIRO | Status financeiro (texto livre). |
+| `seplag_impediment` | TEXT | não | IMPEDIMENTO TÉCNICO - SEPLAG | Impedimento técnico apontado pela SEPLAG (texto da planilha; os impedimentos acompanhados ficam em `amendment_pendencies`). |
+| `documental_status` | VARCHAR(255) | não | STATUS DOCUMENTAL/ FÍSICO | Status documental/físico (texto livre). |
+| `details` | TEXT | não | DETALHAMENTO | Detalhamento. |
+| `notes` | TEXT | não | OBSERVAÇÕES | Observações. |
+| `technical_area` | VARCHAR(255) | não | ÁREA TÉCNICA | Área técnica como veio da planilha. |
+| `sector_id` | UUID → `amendment_sectors` | não | — | Setor responsável. |
+| `responsible_user_id` | UUID → `users` | não | TÉCNICA RESPONSÁVEL | Técnica responsável, quando é usuária do sistema. |
+| `responsible_name` | VARCHAR(255) | não | TÉCNICA RESPONSÁVEL | Nome da técnica responsável (também para quem não tem login). |
+| `sei_number` | VARCHAR(50) | não | Nº SEI | Número do processo no SEI. |
+| `technical_opinion` | TEXT | não | PARECER TÉCNICO | Parecer técnico. |
+| `term_number` | VARCHAR(50) | não | Nº TERMO FOMENTO (TF) | Número do Termo de Fomento. |
+| `term_end_date` | DATE | não | VIGÊNCIA (TF) | Fim da vigência do Termo de Fomento: **prazo limite para concluir a emenda**. Base do filtro "próximas da vigência". |
+| `pf_number` | VARCHAR(50) | não | PF Nº | Número da Programação Financeira. |
+| `pf_date` | DATE | não | DATA PF | Data da Programação Financeira. |
+| `sefaz_pf` | VARCHAR(100) | não | SEFAZ_PF (DT./ AUT.) | Data/autorização da PF na SEFAZ. |
+| `commitment_number` | VARCHAR(50) | não | Nº EMPENHO | Número do empenho. |
+| `dh_number` | VARCHAR(50) | não | DH | Documento hábil. |
+| `le_number` | VARCHAR(50) | não | LE | Número da LE. |
+| `pd` | VARCHAR(100) | não | PD (Nº/ DT) | Programação de desembolso (número/data). |
+| `ob_number` | VARCHAR(50) | não | Nº OB | Ordem bancária. |
+| `payment_date` | DATE | não | DATA PAGTO | Data do pagamento. |
+| `call_number` | VARCHAR(50) | não | Nº CHAMAMENTO (DP) | Número do chamamento público (sistema GTV). |
+| `proposal_number` | VARCHAR(50) | não | Nº PROPOSTA | Número da proposta (sistema GTV). |
+| `situation` | VARCHAR(255) | não | SITUAÇÃO | Situação como veio da planilha (texto livre). |
+| `status` | VARCHAR(20) | sim | — | Situação controlada pelo sistema (`AmendmentStatus`). Padrão `IN_PROGRESS`. |
+| `last_activity_at` | TIMESTAMPTZ | sim | — | Momento da última atividade registrada. Base do filtro "parada há mais tempo". |
+| `completed_at` / `completed_by` | TIMESTAMPTZ / UUID → `users` | não | — | Quando e por quem foi concluída. |
+| `cancelled_at` / `cancelled_by` | TIMESTAMPTZ / UUID → `users` | não | — | Quando e por quem foi cancelada. |
+| `created_by` | UUID → `users` | não | — | Quem cadastrou. |
+| `created_at` / `updated_at` | TIMESTAMPTZ | não | — | Criação e última alteração. |
+
+Índices: `status`, `term_end_date`, `last_activity_at`, `responsible_user_id`, `sector_id`.
+
+**Regras da situação (`status`):** impedimento aberto → `BLOCKED`; senão, espera aberta → `WAITING`; senão → `IN_PROGRESS`. `COMPLETED` e `CANCELLED` só por ação manual; concluir exige que não haja pendência aberta.
+
+### `amendment_pendencies` — pendências (impedimentos e esperas)
+
+| Coluna | Tipo | Obrig. | Descrição |
+|---|---|---|---|
+| `id` | UUID | sim | Identificador. |
+| `amendment_id` | UUID → `amendments` | sim | Emenda (apagado em cascata com a emenda). |
+| `kind` | VARCHAR(20) | sim | Tipo (`PendencyKind`). |
+| `description` | TEXT | sim | O que impede ou o que está sendo aguardado. |
+| `waiting_on` | VARCHAR(255) | não | De quem ou de quê a emenda depende (ex.: `SEPLAG`, `Beneficiário`). |
+| `opened_at` | TIMESTAMPTZ | sim | Quando a pendência foi aberta. A mais antiga entre as abertas dá o "pendente há mais tempo". |
+| `opened_by` | UUID → `users` | não | Quem abriu. |
+| `resolved_at` | TIMESTAMPTZ | não | Quando foi resolvida (≥ `opened_at`, `ck_amendment_pendencies_resolution`). Nulo = **aberta**. |
+| `resolved_by` | UUID → `users` | não | Quem resolveu. |
+| `resolution` | TEXT | não | Como foi resolvida. |
+
+Índice parcial `idx_amendment_pendencies_open` (só as abertas).
+
+### `amendment_activities` — linha do tempo da emenda (imutável)
+
+| Coluna | Tipo | Obrig. | Descrição |
+|---|---|---|---|
+| `id` | UUID | sim | Identificador. |
+| `amendment_id` | UUID → `amendments` | sim | Emenda (apagado em cascata com a emenda). |
+| `kind` | VARCHAR(30) | sim | Tipo do registro (`AmendmentActivityKind`). |
+| `description` | TEXT | não | Texto livre do registro. |
+| `changes` | JSONB | não | Campos alterados, no formato do core: `{"campo": {"antigo": "...", "novo": "..."}}`. |
+| `pendency_id` | UUID → `amendment_pendencies` | não | Pendência aberta ou resolvida por este registro. |
+| `user_id` | UUID → `users` | não | Quem registrou. |
+| `occurred_at` | TIMESTAMPTZ | sim | Quando a atividade aconteceu (pode ser anterior ao registro). |
+| `created_at` | TIMESTAMPTZ | não | Momento do registro. |
+
+---
+
 ## Valores de domínio (enums)
 
 ### Core
@@ -395,6 +512,27 @@ Derivado: **distância** (`distanceKm` na API) = `end_odometer_km` − `start_od
 | `ParticipantType` | `USER` | Usuário do sistema (servidora). |
 | | `CLIENT` | Atendida cadastrada em `clients` (dado sensível). |
 | | `EXTERNAL` | Pessoa sem cadastro: nome (obrigatório), telefone e documento. |
+
+### Emendas
+
+| Enum | Valor | Significado |
+|---|---|---|
+| `AmendmentStatus` | `IN_PROGRESS` | Em andamento: sem pendência aberta. |
+| | `WAITING` | Aguardando: há espera aberta e nenhum impedimento aberto. |
+| | `BLOCKED` | Com impedimento: há impedimento aberto. |
+| | `COMPLETED` | Concluída (manual, sem pendências abertas). |
+| | `CANCELLED` | Cancelada (manual). |
+| `PendencyKind` | `IMPEDIMENT` | Impedimento: algo impede o andamento (ex.: impedimento técnico da SEPLAG). |
+| | `WAITING` | Espera: a emenda aguarda algo ou alguém (ex.: documento do beneficiário). |
+| `AmendmentActivityKind` | `CREATED` | Cadastro da emenda. |
+| | `FIELD_UPDATE` | Alteração de campos (com `changes`). |
+| | `NOTE` | Anotação livre da técnica. |
+| | `PENDENCY_OPENED` | Abertura de impedimento ou espera. |
+| | `PENDENCY_RESOLVED` | Resolução de uma pendência. |
+| | `COMPLETED` | Conclusão. |
+| | `REOPENED` | Reabertura de emenda concluída ou cancelada. |
+| | `CANCELLED` | Cancelamento. |
+| | `IMPORTED` | Criação ou atualização pela importação da planilha. |
 
 ---
 
@@ -556,3 +694,16 @@ Acesso pela categoria nativa com `table_reference = 'fleet_trips'`. Datas e hora
 | Capacidade | Lugares para passageiros do veículo, sem o motorista; limita os participantes. |
 | Odômetro | Quilometragem do veículo; avança com a km final das viagens concluídas. |
 | Linha do tempo financeira | Toda operação com data passada é conferida dia a dia: disponível da subação, saldo a distribuir da ação e ordem empenho → liquidação → pagamento nunca podem ficar inválidos em nenhum dia. |
+| Emenda parlamentar | Recurso do orçamento indicado por um parlamentar para um beneficiário e objeto específicos. |
+| LOA | Lei Orçamentária Anual; `exercise_year` é o ano dela. |
+| Ciclo | Rodada de atualização das emendas pela SEPLAG (ex.: 4º ciclo). |
+| ALEPE | Assembleia Legislativa de Pernambuco; origem do `alepe_code`. |
+| SEPLAG | Secretaria de Planejamento e Gestão; organiza os ciclos e aponta impedimentos técnicos. |
+| GD / MOD | Grupo de despesa / modalidade de aplicação da classificação orçamentária. |
+| SEI | Sistema Eletrônico de Informações; `sei_number` é o processo. |
+| Termo de Fomento (TF) | Instrumento firmado com o beneficiário; sua **vigência** (`term_end_date`) é o prazo limite para concluir a emenda. |
+| PF | Programação Financeira (autorizada pela SEFAZ). |
+| DH / LE / PD / OB | Documento hábil / LE / programação de desembolso / ordem bancária: etapas da execução financeira até o pagamento. |
+| GTV | Sistema de Gestão de Transferência Voluntária (chamamento e proposta). |
+| Pendência | Impedimento ou espera aberta em uma emenda; enquanto houver, a emenda não pode ser concluída. |
+| Parada há mais tempo | Emenda cuja última atividade (`last_activity_at`) é a mais antiga. |
