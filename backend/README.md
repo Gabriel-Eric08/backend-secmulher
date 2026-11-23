@@ -132,7 +132,7 @@ No primeiro início, se o banco não tiver nenhum usuário, o administrador defi
 | `ADMIN_EMAIL` | *(vazio)* | E-mail do primeiro administrador; só é usado com o banco sem usuários |
 | `ADMIN_PASSWORD` | *(vazio)* | Senha do primeiro administrador |
 | `STORAGE_PATH` | `./storage` | Pasta onde os documentos enviados são gravados (no `.gitignore`) |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Origens do front autorizadas, separadas por vírgula |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000` | Origens do front autorizadas, separadas por vírgula |
 | `SEED_PASSWORD` | `Demo@2026` | Senha dos usuários de demonstração (profile `seed`) |
 
 Limite de upload: **20 MB** por arquivo.
