@@ -29,6 +29,8 @@ import com.secmulher.modules.amendments.domain.dtos.AmendmentDtos.PendencyReques
 import com.secmulher.modules.amendments.domain.dtos.AmendmentDtos.PendencyResponse;
 import com.secmulher.modules.amendments.domain.dtos.AmendmentDtos.ReasonRequest;
 import com.secmulher.modules.amendments.domain.dtos.AmendmentDtos.ResolvePendencyRequest;
+import com.secmulher.modules.amendments.domain.dtos.AmendmentSectorDtos.AccessResponse;
+import com.secmulher.modules.amendments.domain.services.AmendmentSectorService;
 import com.secmulher.modules.amendments.domain.services.AmendmentService;
 import com.secmulher.modules.amendments.domain.services.AmendmentTrackingService;
 import com.secmulher.modules.amendments.infra.entities.enums.AmendmentStatus;
@@ -41,10 +43,13 @@ import jakarta.validation.Valid;
 public class AmendmentController {
     final AmendmentService amendmentService;
     final AmendmentTrackingService trackingService;
+    final AmendmentSectorService sectorService;
 
-    public AmendmentController(AmendmentService amendmentService, AmendmentTrackingService trackingService) {
+    public AmendmentController(AmendmentService amendmentService, AmendmentTrackingService trackingService,
+            AmendmentSectorService sectorService) {
         this.amendmentService = amendmentService;
         this.trackingService = trackingService;
+        this.sectorService = sectorService;
     }
 
     // ---------------------------------------------------------------- consultas
@@ -88,6 +93,12 @@ public class AmendmentController {
     @GetMapping("/options")
     public AmendmentOptionsResponse options() {
         return amendmentService.options();
+    }
+
+    // Permissões do usuário logado no módulo e o setor ao qual está restrito
+    @GetMapping("/access")
+    public AccessResponse access() {
+        return sectorService.myAccess();
     }
 
     @GetMapping("/{id}")

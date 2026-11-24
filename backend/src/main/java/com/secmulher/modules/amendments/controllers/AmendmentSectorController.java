@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.secmulher.modules.amendments.domain.dtos.AmendmentSectorDtos.MemberResponse;
 import com.secmulher.modules.amendments.domain.dtos.AmendmentSectorDtos.SectorRequest;
 import com.secmulher.modules.amendments.domain.dtos.AmendmentSectorDtos.SectorResponse;
 import com.secmulher.modules.amendments.domain.services.AmendmentSectorService;
@@ -53,6 +54,25 @@ public class AmendmentSectorController {
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@PathVariable UUID id) {
         sectorService.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ---------------------------------------------------------------- técnicas do setor
+
+    @GetMapping("/{id}/members")
+    public List<MemberResponse> members(@PathVariable UUID id) {
+        return sectorService.members(id);
+    }
+
+    // Vincula a técnica ao setor (se já estava em outro, passa para este)
+    @PutMapping("/{id}/members/{userId}")
+    public MemberResponse addMember(@PathVariable UUID id, @PathVariable UUID userId) {
+        return sectorService.addMember(id, userId);
+    }
+
+    @DeleteMapping("/{id}/members/{userId}")
+    public ResponseEntity<Void> removeMember(@PathVariable UUID id, @PathVariable UUID userId) {
+        sectorService.removeMember(id, userId);
         return ResponseEntity.noContent().build();
     }
 }

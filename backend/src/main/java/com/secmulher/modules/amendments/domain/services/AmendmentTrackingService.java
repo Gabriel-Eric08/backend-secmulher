@@ -34,6 +34,7 @@ import com.secmulher.modules.core.infra.entities.User;
 // Acompanhamento da emenda pelas técnicas: anotações, pendências (impedimentos e esperas), conclusão,
 // cancelamento e reabertura. Cada ação trava a emenda, grava a atividade e recalcula a situação:
 //   impedimento aberto -> BLOCKED; senão espera aberta -> WAITING; senão IN_PROGRESS.
+// Técnica com setor só age nas emendas do próprio setor e nas que estão sob sua responsabilidade (403).
 // Regras:
 //   - emenda concluída ou cancelada não recebe pendência nem conclusão (422); anotação é sempre permitida;
 //   - concluir exige zero pendências abertas (422);
@@ -61,9 +62,12 @@ public class AmendmentTrackingService {
         this.access = access;
     }
 
+    // Trava a emenda e confere se ela está no escopo do usuário (403 se for de outro setor)
     private Amendment lockAmendment(UUID id) {
-        return amendmentRepository.findByIdForUpdate(id)
+        Amendment amendment = amendmentRepository.findByIdForUpdate(id)
             .orElseThrow(() -> new NotFoundException("Emenda não encontrada: " + id));
+        access.requireInScope(amendment);
+        return amendment;
     }
 
     private static void requireOpen(Amendment amendment, String action) {
@@ -83,7 +87,7 @@ public class AmendmentTrackingService {
     @Transactional(readOnly = true)
     public List<ActivityResponse> timeline(UUID id) {
         access.requireRead();
-        amendmentService.getAmendmentById(id);
+        amendmentService.getAmendmentInScope(id);
         return activityRepository.findTimeline(id).stream().map(AmendmentMapper::activity).toList();
     }
 
@@ -91,7 +95,7 @@ public class AmendmentTrackingService {
     @Transactional(readOnly = true)
     public List<PendencyResponse> pendencies(UUID id, Boolean open) {
         access.requireRead();
-        amendmentService.getAmendmentById(id);
+        amendmentService.getAmendmentInScope(id);
         return pendencyRepository.findByAmendmentId(id).stream()
             .filter(p -> open == null || p.isOpen() == open)
             .map(AmendmentMapper::pendency)

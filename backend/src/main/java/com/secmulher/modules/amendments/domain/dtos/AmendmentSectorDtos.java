@@ -26,4 +26,24 @@ public final class AmendmentSectorDtos {
 
     // Resumo usado dentro da emenda
     public record SectorSummary(UUID id, String name) {}
+
+    // Técnica vinculada ao setor
+    public record MemberResponse(
+        UUID userId,
+        String name,
+        String email,
+        Boolean isActive,
+        LocalDateTime createdAt
+    ) {}
+
+    // O que o usuário logado pode fazer no módulo e a que setor está restrito
+    public record AccessResponse(
+        boolean canRead,
+        boolean canCreate,
+        boolean canUpdate,
+        boolean canDelete,
+        boolean restrictedToSector,
+        SectorSummary sector,
+        boolean canManageSectorMembers
+    ) {}
 }

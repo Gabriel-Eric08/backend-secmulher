@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.secmulher.modules.amendments.domain.access.AmendmentAccessService;
+import com.secmulher.modules.amendments.domain.access.AmendmentScope;
 import com.secmulher.modules.amendments.domain.dtos.AmendmentDtos.AmendmentFilter;
 import com.secmulher.modules.amendments.domain.dtos.AmendmentDtos.AmendmentOptionsResponse;
 import com.secmulher.modules.amendments.domain.dtos.AmendmentDtos.AmendmentRequest;
@@ -29,14 +30,17 @@ import com.secmulher.modules.amendments.domain.dtos.AmendmentDtos.AmendmentSumma
 import com.secmulher.modules.amendments.infra.entities.Amendment;
 import com.secmulher.modules.amendments.infra.entities.AmendmentPendency;
 import com.secmulher.modules.amendments.infra.entities.AmendmentSector;
+import com.secmulher.modules.amendments.infra.entities.AmendmentSectorMember;
 import com.secmulher.modules.amendments.infra.entities.enums.AmendmentActivityKind;
 import com.secmulher.modules.amendments.infra.entities.enums.AmendmentStatus;
 import com.secmulher.modules.amendments.infra.entities.enums.PendencyKind;
 import com.secmulher.modules.amendments.infra.repositories.AmendmentPendencyRepository;
 import com.secmulher.modules.amendments.infra.repositories.AmendmentRepository;
+import com.secmulher.modules.amendments.infra.repositories.AmendmentSectorMemberRepository;
 import com.secmulher.modules.amendments.infra.repositories.AmendmentSectorRepository;
 import com.secmulher.modules.core.domain.exceptions.BusinessException;
 import com.secmulher.modules.core.domain.exceptions.ConflictException;
+import com.secmulher.modules.core.domain.exceptions.ForbiddenException;
 import com.secmulher.modules.core.domain.exceptions.NotFoundException;
 import com.secmulher.modules.core.domain.services.ActivityService;
 import com.secmulher.modules.core.infra.entities.User;
@@ -53,7 +57,10 @@ import jakarta.persistence.criteria.Subquery;
 //   - código (COD) único no ano, sem diferenciar maiúsculas (409);
 //   - setor informado precisa estar ativo quando é atribuído (422);
 //   - emenda concluída ou cancelada não é editada: reabra antes (422);
-//   - toda alteração de campo vai para a linha do tempo com o valor antigo e o novo.
+//   - toda alteração de campo vai para a linha do tempo com o valor antigo e o novo;
+//   - técnica com setor só alcança as emendas do setor e as que estão sob sua responsabilidade (403),
+//     cadastra no próprio setor (sem sectorId = o dela) e não move emenda para outro setor (403);
+//   - a técnica responsável, se tiver setor, precisa ser do setor da emenda (422).
 @Service
 public class AmendmentService {
     private static final List<AmendmentStatus> CLOSED = List.of(AmendmentStatus.COMPLETED, AmendmentStatus.CANCELLED);
@@ -62,6 +69,7 @@ public class AmendmentService {
 
     final AmendmentRepository amendmentRepository;
     final AmendmentSectorRepository sectorRepository;
+    final AmendmentSectorMemberRepository memberRepository;
     final AmendmentPendencyRepository pendencyRepository;
     final UserRepository userRepository;
     final AmendmentTimeline timeline;
@@ -69,10 +77,12 @@ public class AmendmentService {
     final AmendmentAccessService access;
 
     public AmendmentService(AmendmentRepository amendmentRepository, AmendmentSectorRepository sectorRepository,
-            AmendmentPendencyRepository pendencyRepository, UserRepository userRepository, AmendmentTimeline timeline,
-            AmendmentMapper mapper, AmendmentAccessService access) {
+            AmendmentSectorMemberRepository memberRepository, AmendmentPendencyRepository pendencyRepository,
+            UserRepository userRepository, AmendmentTimeline timeline, AmendmentMapper mapper,
+            AmendmentAccessService access) {
         this.amendmentRepository = amendmentRepository;
         this.sectorRepository = sectorRepository;
+        this.memberRepository = memberRepository;
         this.pendencyRepository = pendencyRepository;
         this.userRepository = userRepository;
         this.timeline = timeline;
@@ -83,6 +93,13 @@ public class AmendmentService {
     Amendment getAmendmentById(UUID id) {
         return amendmentRepository.findById(id)
             .orElseThrow(() -> new NotFoundException("Emenda não encontrada: " + id));
+    }
+
+    // Busca a emenda e confere se ela está no escopo do usuário (403 se for de outro setor)
+    Amendment getAmendmentInScope(UUID id) {
+        Amendment amendment = getAmendmentById(id);
+        access.requireInScope(amendment);
+        return amendment;
     }
 
     AmendmentResponse toResponse(Amendment amendment) {
@@ -96,7 +113,7 @@ public class AmendmentService {
     public List<AmendmentResponse> search(AmendmentFilter filter, AmendmentSort sort) {
         access.requireRead();
         UUID currentUserId = Boolean.TRUE.equals(filter.mine()) ? access.requireUser().getId() : null;
-        List<Amendment> amendments = amendmentRepository.findAll(spec(filter, currentUserId, true));
+        List<Amendment> amendments = amendmentRepository.findAll(spec(filter, currentUserId, access.scope(), true));
         if (amendments.isEmpty()) {
             return List.of();
         }
@@ -114,7 +131,7 @@ public class AmendmentService {
     @Transactional(readOnly = true)
     public AmendmentResponse findById(UUID id) {
         access.requireRead();
-        return toResponse(getAmendmentById(id));
+        return toResponse(getAmendmentInScope(id));
     }
 
     // Contadores para o painel. Os filtros de escopo (ano, setor, responsável) valem para todos os números
@@ -124,10 +141,11 @@ public class AmendmentService {
         access.requireRead();
         int idle = idleDays != null && idleDays > 0 ? idleDays : DEFAULT_IDLE_DAYS;
         UUID responsible = Boolean.TRUE.equals(mine) ? access.requireUser().getId() : responsibleUserId;
+        AmendmentScope scope = access.scope();
 
         Map<AmendmentStatus, Long> byStatus = new EnumMap<>(AmendmentStatus.class);
         for (AmendmentStatus status : AmendmentStatus.values()) {
-            byStatus.put(status, count(scope(exerciseYear, sectorId, responsible, List.of(status), null, null, null, null)));
+            byStatus.put(status, count(scope, scope(exerciseYear, sectorId, responsible, List.of(status), null, null, null, null)));
         }
         long total = byStatus.values().stream().mapToLong(Long::longValue).sum();
         long closed = byStatus.get(AmendmentStatus.COMPLETED) + byStatus.get(AmendmentStatus.CANCELLED);
@@ -137,10 +155,10 @@ public class AmendmentService {
             byStatus,
             total - closed,
             pending,
-            count(scope(exerciseYear, sectorId, responsible, null, null, null, true, null)),
-            count(scope(exerciseYear, sectorId, responsible, null, null, mapper.deadlineAlertDays(), null, null)),
+            count(scope, scope(exerciseYear, sectorId, responsible, null, null, null, true, null)),
+            count(scope, scope(exerciseYear, sectorId, responsible, null, null, mapper.deadlineAlertDays(), null, null)),
             mapper.deadlineAlertDays(),
-            count(scope(exerciseYear, sectorId, responsible, null, idle, null, null, null)),
+            count(scope, scope(exerciseYear, sectorId, responsible, null, idle, null, null, null)),
             idle
         );
     }
@@ -159,8 +177,8 @@ public class AmendmentService {
         );
     }
 
-    private long count(AmendmentFilter filter) {
-        return amendmentRepository.count(spec(filter, null, false));
+    private long count(AmendmentScope scope, AmendmentFilter filter) {
+        return amendmentRepository.count(spec(filter, null, scope, false));
     }
 
     private static AmendmentFilter scope(Integer exerciseYear, UUID sectorId, UUID responsibleUserId,
@@ -174,6 +192,7 @@ public class AmendmentService {
     @Transactional
     public AmendmentResponse create(AmendmentRequest request) {
         User user = access.requireCreate();
+        AmendmentScope scope = access.scope();
         String code = AmendmentMapper.normalize(request.code());
         requireUniqueCode(request.exerciseYear(), code, null);
 
@@ -184,6 +203,10 @@ public class AmendmentService {
             .createdBy(user)
             .build();
         apply(amendment, request, code);
+        if (scope.restricted() && amendment.getSector() == null) {
+            amendment.setSector(scope.sector());
+        }
+        requireSectorRules(scope, amendment, null);
         amendmentRepository.saveAndFlush(amendment);
         timeline.record(amendment, AmendmentActivityKind.CREATED, "Emenda cadastrada", null, null, user, now);
         return toResponse(amendment);
@@ -195,15 +218,19 @@ public class AmendmentService {
         User user = access.requireUpdate();
         Amendment amendment = amendmentRepository.findByIdForUpdate(id)
             .orElseThrow(() -> new NotFoundException("Emenda não encontrada: " + id));
+        AmendmentScope scope = access.scope();
+        AmendmentAccessService.requireInScope(scope, amendment);
         if (amendment.getStatus().isClosed()) {
             throw new BusinessException("A emenda está " + amendment.getStatus().getLabel().toLowerCase(Locale.ROOT)
                 + " e não pode ser editada. Reabra-a antes");
         }
         String code = AmendmentMapper.normalize(request.code());
         requireUniqueCode(request.exerciseYear(), code, id);
+        UUID previousSectorId = amendment.getSector() != null ? amendment.getSector().getId() : null;
 
         Map<String, Object> before = snapshot(amendment);
         apply(amendment, request, code);
+        requireSectorRules(scope, amendment, previousSectorId);
         Map<String, Object> after = snapshot(amendment);
         Map<String, Object> changes = new LinkedHashMap<>();
         before.forEach((field, value) -> ActivityService.trackChange(changes, field, value, after.get(field)));
@@ -223,7 +250,28 @@ public class AmendmentService {
     @Transactional
     public void delete(UUID id) {
         access.requireDelete();
-        amendmentRepository.delete(getAmendmentById(id));
+        amendmentRepository.delete(getAmendmentInScope(id));
+    }
+
+    // Técnica com setor não põe emenda em outro setor; a responsável, se tiver setor, é do setor da emenda
+    private void requireSectorRules(AmendmentScope scope, Amendment amendment, UUID previousSectorId) {
+        UUID sectorId = amendment.getSector() != null ? amendment.getSector().getId() : null;
+        if (scope.restricted() && !Objects.equals(sectorId, previousSectorId)
+                && !Objects.equals(sectorId, scope.sectorId())) {
+            throw new ForbiddenException("Você só pode colocar emendas no seu setor (" + scope.sector().getName() + ")");
+        }
+        User responsible = amendment.getResponsibleUser();
+        if (responsible == null) {
+            return;
+        }
+        memberRepository.findByUserId(responsible.getId())
+            .map(AmendmentSectorMember::getSector)
+            .filter(memberSector -> !memberSector.getId().equals(sectorId))
+            .ifPresent(memberSector -> {
+                throw new BusinessException(responsible.getName() + " é técnica do setor " + memberSector.getName()
+                    + (amendment.getSector() != null ? " e a emenda está no setor " + amendment.getSector().getName()
+                        : " e a emenda está sem setor"));
+            });
     }
 
     private void requireUniqueCode(Integer exerciseYear, String code, UUID currentId) {
@@ -355,7 +403,8 @@ public class AmendmentService {
 
     // idleDays, deadlineWithinDays e expired só olham emendas abertas (concluída/cancelada não está parada
     // nem atrasada). fetch = false nas contagens.
-    private static Specification<Amendment> spec(AmendmentFilter f, UUID currentUserId, boolean fetch) {
+    private static Specification<Amendment> spec(AmendmentFilter f, UUID currentUserId, AmendmentScope scope,
+            boolean fetch) {
         return (root, query, cb) -> {
             if (fetch && query.getResultType() != Long.class && query.getResultType() != long.class) {
                 root.fetch("sector", JoinType.LEFT);
@@ -367,6 +416,12 @@ public class AmendmentService {
             List<Predicate> predicates = new ArrayList<>();
             Expression<AmendmentStatus> status = root.get("status");
 
+            // Técnica com setor: emendas do setor ou sob sua responsabilidade
+            if (scope != null && scope.restricted()) {
+                predicates.add(cb.or(
+                    cb.equal(root.get("sector").get("id"), scope.sectorId()),
+                    cb.equal(root.get("responsibleUser").get("id"), scope.userId())));
+            }
             if (f.status() != null && !f.status().isEmpty()) {
                 predicates.add(status.in(f.status()));
             }

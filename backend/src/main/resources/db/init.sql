@@ -446,6 +446,18 @@ CREATE TABLE IF NOT EXISTS amendment_sectors (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_amendment_sectors_name ON amendment_sectors (LOWER(name));
 
+-- Técnicas de cada setor: cada usuário pertence a no máximo um setor (user_id único).
+-- Quem tem setor só vê e altera as emendas do próprio setor e as que estão sob sua responsabilidade;
+-- quem não tem setor (coordenação) vê todas, conforme a permissão na categoria.
+CREATE TABLE IF NOT EXISTS amendment_sector_members (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sector_id UUID NOT NULL REFERENCES amendment_sectors(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_amendment_sector_members_sector ON amendment_sector_members(sector_id);
+
 -- Emendas. status: IN_PROGRESS, WAITING (espera aberta), BLOCKED (impedimento aberto), COMPLETED, CANCELLED
 CREATE TABLE IF NOT EXISTS amendments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

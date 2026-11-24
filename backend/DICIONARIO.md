@@ -356,9 +356,12 @@ Derivado: **distância** (`distanceKm` na API) = `end_odometer_km` − `start_od
 
 Acesso pela categoria nativa com `table_reference = 'amendments'`. Cada emenda é uma linha da planilha de emendas parlamentares (LOA, ciclos da SEPLAG). As colunas de status da planilha são **texto livre** e entram como vieram; a situação usada nos filtros é `amendments.status`, controlada pelo sistema.
 
+**Escopo por setor:** a técnica vinculada a um setor (`amendment_sector_members`) só vê e altera as emendas do próprio setor e as que estão sob sua responsabilidade (`responsible_user_id`). Administradores e usuários sem setor (coordenação) veem todas, conforme a permissão na categoria.
+
 Relações:
 
 ```
+users 1─1 amendment_sector_members N─1 amendment_sectors
 amendment_sectors 1─N amendments 1─N amendment_pendencies
                           │                 │
                           1─N amendment_activities (pendency_id opcional)
@@ -373,6 +376,18 @@ amendment_sectors 1─N amendments 1─N amendment_pendencies
 | `description` | TEXT | não | Descrição. |
 | `is_active` | BOOLEAN | sim | Setor inativo não recebe novas emendas. Padrão `true`. |
 | `created_at` / `updated_at` | TIMESTAMPTZ | não | Criação e última alteração. |
+
+### `amendment_sector_members` — técnicas de cada setor
+
+Cada usuário pertence a **no máximo um** setor. Vincular a outro setor move a técnica.
+
+| Coluna | Tipo | Obrig. | Descrição |
+|---|---|---|---|
+| `id` | UUID | sim | Identificador. |
+| `sector_id` | UUID → `amendment_sectors` | sim | Setor (vínculo apagado em cascata com o setor). Índice `idx_amendment_sector_members_sector`. |
+| `user_id` | UUID → `users` | sim | Técnica, **única** na tabela (vínculo apagado em cascata com o usuário). |
+| `created_by` | UUID → `users` | não | Quem fez o vínculo. |
+| `created_at` | TIMESTAMPTZ | não | Quando foi vinculada. |
 
 ### `amendments` — emendas
 
@@ -688,7 +703,11 @@ Acesso pela categoria nativa com `table_reference = 'amendments'`. Datas `AAAA-M
 | `GET` | `/amendments/sectors/{id}` | leitura | Busca setor. |
 | `POST` | `/amendments/sectors` | criação | Cria: `name`, `description`. |
 | `PUT` | `/amendments/sectors/{id}` | edição | Altera os mesmos campos e `isActive`. |
-| `DELETE` | `/amendments/sectors/{id}` | exclusão | Exclui setor sem emendas (409 caso contrário). |
+| `DELETE` | `/amendments/sectors/{id}` | exclusão | Exclui setor sem emendas (409 caso contrário). Os vínculos das técnicas caem junto. |
+| `GET` | `/amendments/sectors/{id}/members` | leitura | Técnicas do setor: `userId`, `name`, `email`, `isActive`, `createdAt`. |
+| `PUT` | `/amendments/sectors/{id}/members/{userId}` | coordenação | Vincula a técnica ao setor; se já estava em outro, passa para este. Responde com a técnica. |
+| `DELETE` | `/amendments/sectors/{id}/members/{userId}` | coordenação | Desvincula a técnica (404 se ela não for deste setor). |
+| `GET` | `/amendments/access` | autenticado | Permissões do usuário logado no módulo: `canRead`, `canCreate`, `canUpdate`, `canDelete`, `restrictedToSector`, `sector` (`id`, `name`; nulo se não restrito) e `canManageSectorMembers`. |
 | `GET` | `/amendments` | leitura | Lista emendas com filtros (abaixo) e `sort` (`AmendmentSort`). |
 | `GET` | `/amendments/summary?exerciseYear=&sectorId=&responsibleUserId=&mine=&idleDays=` | leitura | Contadores: `total`, `byStatus`, `open`, `pending`, `expired`, `nearDeadline` (com `deadlineAlertDays`) e `idle` (paradas há `idleDays` dias ou mais, padrão 30). |
 | `GET` | `/amendments/options` | leitura | Valores já usados, para os filtros: `exerciseYears`, `cycles`, `parliamentarians`, `municipalities`, `categories`, `types`, `technicalAreas`. |
@@ -706,6 +725,10 @@ Acesso pela categoria nativa com `table_reference = 'amendments'`. Datas `AAAA-M
 | `POST` | `/amendments/{id}/reopen` | edição | Reabre concluída ou cancelada: `reason` (obrigatório). |
 
 **Filtros de `GET /amendments`** (todos opcionais, combinados com "e"): `status` (um ou vários: `?status=WAITING&status=BLOCKED`), `open` (não concluída nem cancelada), `pending` (com pendência aberta), `pendencyKind` (com pendência aberta daquele tipo), `idleDays` (parada há N dias ou mais), `deadlineWithinDays` (vigência entre hoje e hoje + N), `expired` (vigência vencida), `sectorId`, `responsibleUserId`, `mine` (técnica responsável = usuário logado), `exerciseYear`, `cycle` (igual, sem diferenciar maiúsculas), `parliamentarian` e `municipality` (contém), `q` (contém, em parlamentar, beneficiário, município, objeto, códigos, Nº SEI, Nº TF, técnica e nome da ação). `idleDays`, `deadlineWithinDays` e `expired` só trazem emendas abertas.
+
+**Acesso "coordenação":** permissão de edição na categoria e não estar vinculado a um setor (administradores sempre podem).
+
+**Escopo por setor:** a técnica com setor só alcança as emendas do próprio setor e as que estão sob sua responsabilidade. Listagem e painel (`summary`) já vêm filtrados; ler, alterar, registrar atividade ou excluir uma emenda fora do escopo dá 403. Ao cadastrar sem `sectorId`, a emenda vai para o setor da técnica; colocar a emenda em outro setor (no cadastro ou na alteração) dá 403. A técnica responsável (`responsibleUserId`), se tiver setor, precisa ser do setor da emenda (422). `GET /amendments/options` não é filtrado.
 
 **Regras:** código único no ano (409); setor atribuído precisa estar ativo (422); emenda concluída ou cancelada não é editada nem recebe pendência (422, reabra antes), mas aceita anotação; concluir exige zero pendências abertas (422); cancelar encerra as pendências abertas; datas informadas (`occurredAt`, `openedAt`, `resolvedAt`, `completedAt`) não podem ser no futuro (400) e a resolução não pode ser antes da abertura (422). Toda atividade avança `last_activity_at` (nunca para trás) e as mudanças de situação entram em `changes.status`.
 
@@ -752,3 +775,5 @@ Acesso pela categoria nativa com `table_reference = 'amendments'`. Datas `AAAA-M
 | GTV | Sistema de Gestão de Transferência Voluntária (chamamento e proposta). |
 | Pendência | Impedimento ou espera aberta em uma emenda; enquanto houver, a emenda não pode ser concluída. |
 | Parada há mais tempo | Emenda cuja última atividade (`last_activity_at`) é a mais antiga. |
+| Técnica de emendas | Usuária vinculada a um setor de emendas (`amendment_sector_members`); trabalha só nas emendas do seu setor e nas que estão sob sua responsabilidade. |
+| Coordenação (emendas) | Quem tem edição na categoria "Emendas" e não está vinculado a um setor: vê todas as emendas e vincula as técnicas aos setores. |

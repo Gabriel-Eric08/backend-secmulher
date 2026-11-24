@@ -183,15 +183,16 @@ src/main/java/com/secmulher/
     └── amendments/                 # Emendas parlamentares: dados da planilha, pendências e linha do tempo
         ├── controllers/            # /amendments, /amendments/sectors
         ├── domain/
-        │   ├── access/             # AmendmentAccessService (permissão na categoria 'amendments')
+        │   ├── access/             # AmendmentAccessService e AmendmentScope (permissão na categoria e escopo por setor)
         │   ├── dtos/
         │   └── services/           # Cadastro e filtros, acompanhamento (pendências, conclusão), linha do tempo
         └── infra/
-            ├── entities/           # Amendment, AmendmentSector, AmendmentPendency, AmendmentActivity
+            ├── entities/           # Amendment, AmendmentSector, AmendmentSectorMember, AmendmentPendency, AmendmentActivity
             └── repositories/
 src/main/resources/
 ├── application.properties
 └── db/init.sql                     # Schema do banco (fora de static/, não é publicado via HTTP)
+scripts/teste/                      # Dados de teste em SQL (emendas), fora do jar
 ```
 
 ### Como criar um módulo de setor
@@ -228,6 +229,7 @@ Não é preciso registrar nada: como `Application` fica em `com.secmulher`, o Sp
 | `fleet_trips` | Viagens: `number`, `status`, `purpose`, partida/destino, ida e volta previstas, motorista, veículo, execução (saída/volta real, km) e cancelamento |
 | `fleet_trip_participants` | Participantes: `participant_type` (`USER`, `CLIENT`, `EXTERNAL`), `user_id`/`client_id`, `name` no momento do cadastro, telefone, documento |
 | `amendment_sectors` | Setores responsáveis por emendas: `name` (único), `description`, `is_active` |
+| `amendment_sector_members` | Técnicas de cada setor: `sector_id`, `user_id` (único: cada usuário em no máximo um setor) |
 | `amendments` | Emendas parlamentares: todas as colunas da planilha (parlamentar, ciclo, códigos, ação, beneficiário, município, objeto, valor atual, status em texto livre, SEI, Termo de Fomento e vigência, PF, empenho, OB, pagamento, GTV), setor e técnica responsável, `status` controlado pelo sistema e `last_activity_at` |
 | `amendment_pendencies` | Impedimentos (`IMPEDIMENT`) e esperas (`WAITING`) de cada emenda; abertas enquanto `resolved_at` é nulo |
 | `amendment_activities` | Linha do tempo imutável de cada emenda: `kind`, `description`, `changes` (campos alterados), pendência relacionada |
@@ -878,6 +880,21 @@ Crie uma **categoria nativa** com `tableReference: "amendments"` (ex.: "Emendas"
 | Edição | Alterar campos, anotar, abrir/resolver pendências, concluir, cancelar e reabrir |
 | Exclusão | Excluir emendas e setores sem emendas |
 
+### Setores e técnicas
+
+As emendas são agrupadas por setor, e cada técnica pertence a **um** setor:
+
+```
+PUT    /amendments/sectors/{id}/members/{userId}    # vincula (se já estava em outro setor, passa para este)
+DELETE /amendments/sectors/{id}/members/{userId}    # desvincula
+GET    /amendments/sectors/{id}/members             # técnicas do setor
+```
+
+- **Técnica com setor:** vê e altera só as emendas do próprio setor e as que estão sob sua responsabilidade. A listagem e o painel já vêm filtrados, e o resto dá 403. Cadastro sem `sectorId` cai no setor dela, e ela não pode mover uma emenda para outro setor.
+- **Coordenação** (edição na categoria e sem setor) e administradores: veem todas as emendas e vinculam as técnicas.
+- A técnica responsável por uma emenda precisa ser do setor da emenda (422).
+- `GET /amendments/access` diz ao front o que o usuário logado pode fazer e a que setor está restrito.
+
 ### Situação da emenda
 
 As colunas de status da planilha (STATUS FINANCEIRO, SITUAÇÃO etc.) são texto livre. Os filtros usam a situação controlada pelo sistema (`status`):
@@ -979,6 +996,29 @@ Com o profile `seed`, a aplicação cria dados fictícios para apresentação e 
   - **"Inscrições em Cursos":** os padrão + *Matrícula*, *Presença* e *Certificado*.
   - **Restrição por perfil:** só a psicóloga registra *Atendimento psicológico*; a assistente social pode registrar todos os outros.
 - **Execução:** o seed não roda de novo se já tiver sido aplicado.
+
+### Dados de teste das emendas
+
+Enquanto a importação da planilha não existe, `scripts/teste/` traz dados de teste do módulo de emendas em SQL:
+
+```bash
+psql -U postgres -d omnibase -f scripts/teste/emendas-inserir.sql    # insere
+psql -U postgres -d omnibase -f scripts/teste/emendas-remover.sql    # remove
+```
+
+- **Categoria:** cria a categoria nativa "Emendas" (`amendments`) se ela não existir. A remoção mantém a categoria.
+- **Setores:** `[TESTE] Convênios`, `[TESTE] Financeiro`, `[TESTE] Jurídico` e `[TESTE] Setor desativado`.
+- **Técnicas** (senha `Demo@2026`, com leitura, criação e edição em "Emendas"):
+
+  | E-mail | Setor |
+  |---|---|
+  | `emendas.convenios1@secmulher.demo` | Convênios |
+  | `emendas.convenios2@secmulher.demo` | Convênios |
+  | `emendas.financeiro@secmulher.demo` | Financeiro |
+  | `emendas.juridico@secmulher.demo` | Jurídico |
+
+- **Emendas:** `TESTE-001` a `TESTE-010` (ciclo `TESTE`), cobrindo todas as situações e prazos, com pendências e linha do tempo.
+- Rode depois do `init.sql` e, de preferência, depois do profile `seed`, que cria a coordenação e o administrador usados como autores. O script de inserção se recusa a rodar se os dados já existirem.
 
 ---
 
