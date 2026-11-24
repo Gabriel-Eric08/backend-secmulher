@@ -890,7 +890,7 @@ DELETE /amendments/sectors/{id}/members/{userId}    # desvincula
 GET    /amendments/sectors/{id}/members             # técnicas do setor
 ```
 
-- **Técnica com setor:** vê e altera só as emendas do próprio setor e as que estão sob sua responsabilidade. A listagem e o painel já vêm filtrados, e o resto dá 403. Cadastro sem `sectorId` cai no setor dela, e ela não pode mover uma emenda para outro setor.
+- **Técnica com setor:** vê e altera só as emendas do próprio setor e as que estão sob sua responsabilidade. A listagem, o painel e os valores dos filtros (`options`) já vêm filtrados, e o resto dá 403. Cadastro sem `sectorId` cai no setor dela, e ela não pode mover uma emenda para outro setor.
 - **Coordenação** (edição na categoria e sem setor) e administradores: veem todas as emendas e vinculam as técnicas.
 - A técnica responsável por uma emenda precisa ser do setor da emenda (422).
 - `GET /amendments/access` diz ao front o que o usuário logado pode fazer e a que setor está restrito.

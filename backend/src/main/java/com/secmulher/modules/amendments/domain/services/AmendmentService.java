@@ -166,14 +166,18 @@ public class AmendmentService {
     @Transactional(readOnly = true)
     public AmendmentOptionsResponse options() {
         access.requireRead();
+        AmendmentScope scope = access.scope();
+        boolean restricted = scope.restricted();
+        UUID sectorId = scope.sectorId();
+        UUID userId = scope.userId();
         return new AmendmentOptionsResponse(
-            amendmentRepository.findExerciseYears(),
-            amendmentRepository.findCycles(),
-            amendmentRepository.findParliamentarians(),
-            amendmentRepository.findMunicipalities(),
-            amendmentRepository.findCategories(),
-            amendmentRepository.findTypes(),
-            amendmentRepository.findTechnicalAreas()
+            amendmentRepository.findExerciseYears(restricted, sectorId, userId),
+            amendmentRepository.findCycles(restricted, sectorId, userId),
+            amendmentRepository.findParliamentarians(restricted, sectorId, userId),
+            amendmentRepository.findMunicipalities(restricted, sectorId, userId),
+            amendmentRepository.findCategories(restricted, sectorId, userId),
+            amendmentRepository.findTypes(restricted, sectorId, userId),
+            amendmentRepository.findTechnicalAreas(restricted, sectorId, userId)
         );
     }
 

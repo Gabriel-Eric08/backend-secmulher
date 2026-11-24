@@ -26,25 +26,30 @@ public interface AmendmentRepository extends JpaRepository<Amendment, UUID>, Jpa
     @Query("select a from Amendment a where a.id = :id")
     Optional<Amendment> findByIdForUpdate(UUID id);
 
-    // Valores já usados, para os filtros do front
-    @Query("select distinct a.exerciseYear from Amendment a order by a.exerciseYear desc")
-    List<Integer> findExerciseYears();
+    // Valores já usados, para os filtros do front. Escopo: restricted = true limita às emendas do setor
+    // (sectorId) ou sob responsabilidade do usuário (userId); false = todas
+    String SCOPE = " (:restricted = false or a.sector.id = :sectorId or a.responsibleUser.id = :userId) ";
 
-    @Query("select distinct a.cycle from Amendment a where a.cycle is not null order by a.cycle")
-    List<String> findCycles();
+    @Query("select distinct a.exerciseYear from Amendment a where" + SCOPE + "order by a.exerciseYear desc")
+    List<Integer> findExerciseYears(boolean restricted, UUID sectorId, UUID userId);
 
-    @Query("select distinct a.parliamentarian from Amendment a order by a.parliamentarian")
-    List<String> findParliamentarians();
+    @Query("select distinct a.cycle from Amendment a where a.cycle is not null and" + SCOPE + "order by a.cycle")
+    List<String> findCycles(boolean restricted, UUID sectorId, UUID userId);
 
-    @Query("select distinct a.municipality from Amendment a where a.municipality is not null order by a.municipality")
-    List<String> findMunicipalities();
+    @Query("select distinct a.parliamentarian from Amendment a where" + SCOPE + "order by a.parliamentarian")
+    List<String> findParliamentarians(boolean restricted, UUID sectorId, UUID userId);
 
-    @Query("select distinct a.category from Amendment a where a.category is not null order by a.category")
-    List<String> findCategories();
+    @Query("select distinct a.municipality from Amendment a where a.municipality is not null and" + SCOPE
+        + "order by a.municipality")
+    List<String> findMunicipalities(boolean restricted, UUID sectorId, UUID userId);
 
-    @Query("select distinct a.type from Amendment a where a.type is not null order by a.type")
-    List<String> findTypes();
+    @Query("select distinct a.category from Amendment a where a.category is not null and" + SCOPE + "order by a.category")
+    List<String> findCategories(boolean restricted, UUID sectorId, UUID userId);
 
-    @Query("select distinct a.technicalArea from Amendment a where a.technicalArea is not null order by a.technicalArea")
-    List<String> findTechnicalAreas();
+    @Query("select distinct a.type from Amendment a where a.type is not null and" + SCOPE + "order by a.type")
+    List<String> findTypes(boolean restricted, UUID sectorId, UUID userId);
+
+    @Query("select distinct a.technicalArea from Amendment a where a.technicalArea is not null and" + SCOPE
+        + "order by a.technicalArea")
+    List<String> findTechnicalAreas(boolean restricted, UUID sectorId, UUID userId);
 }
